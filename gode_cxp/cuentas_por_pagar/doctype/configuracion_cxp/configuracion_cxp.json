@@ -1,0 +1,41 @@
+{
+ "doctype": "DocType",
+ "name": "Configuracion CxP",
+ "module": "Cuentas por Pagar",
+ "issingle": 1,
+ "custom": 0,
+ "engine": "InnoDB",
+ "editable_grid": 1,
+ "track_changes": 1,
+ "field_order": [
+  "sec_empresa",
+  "rfc_empresa",
+  "item_generico",
+  "cuenta_gasto_default",
+  "col_empresa",
+  "cuenta_iva_acreditable",
+  "cuenta_ret_iva",
+  "cuenta_ret_isr",
+  "dias_credito_default",
+  "sec_pruebas",
+  "modo_pruebas_correo"
+ ],
+ "fields": [
+  {"fieldname": "sec_empresa", "fieldtype": "Section Break", "label": "Empresa y contabilidad"},
+  {"fieldname": "rfc_empresa", "fieldtype": "Data", "label": "RFC de la empresa (receptor de los CFDI)", "reqd": 1, "length": 13},
+  {"fieldname": "item_generico", "fieldtype": "Link", "label": "Artículo genérico para conceptos CFDI", "options": "Item"},
+  {"fieldname": "cuenta_gasto_default", "fieldtype": "Link", "label": "Cuenta de gasto por defecto", "options": "Account"},
+  {"fieldname": "col_empresa", "fieldtype": "Column Break"},
+  {"fieldname": "cuenta_iva_acreditable", "fieldtype": "Link", "label": "Cuenta IVA acreditable", "options": "Account"},
+  {"fieldname": "cuenta_ret_iva", "fieldtype": "Link", "label": "Cuenta IVA retenido", "options": "Account"},
+  {"fieldname": "cuenta_ret_isr", "fieldtype": "Link", "label": "Cuenta ISR retenido", "options": "Account"},
+  {"fieldname": "dias_credito_default", "fieldtype": "Int", "label": "Días de crédito por defecto", "default": "30"},
+  {"fieldname": "sec_pruebas", "fieldtype": "Section Break", "label": "Pruebas"},
+  {"fieldname": "modo_pruebas_correo", "fieldtype": "Check", "label": "Modo pruebas: no enviar correos", "default": "0"}
+ ],
+ "permissions": [
+  {"role": "System Manager", "read": 1, "write": 1, "create": 1, "print": 1, "email": 1, "share": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}

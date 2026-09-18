@@ -1,0 +1,38 @@
+{
+ "doctype": "DocType",
+ "name": "CFDI Concepto",
+ "module": "Cuentas por Pagar",
+ "istable": 1,
+ "engine": "InnoDB",
+ "editable_grid": 1,
+ "field_order": [
+  "clave_prod_serv",
+  "descripcion",
+  "cantidad",
+  "clave_unidad",
+  "unidad",
+  "valor_unitario",
+  "importe",
+  "descuento",
+  "iva",
+  "ieps",
+  "iva_retenido",
+  "isr_retenido"
+ ],
+ "fields": [
+  {"fieldname": "clave_prod_serv", "fieldtype": "Data", "label": "Clave prod/serv", "in_list_view": 1, "columns": 1},
+  {"fieldname": "descripcion", "fieldtype": "Small Text", "label": "Descripción", "in_list_view": 1, "columns": 4},
+  {"fieldname": "cantidad", "fieldtype": "Float", "label": "Cantidad", "in_list_view": 1, "columns": 1},
+  {"fieldname": "clave_unidad", "fieldtype": "Data", "label": "Clave unidad"},
+  {"fieldname": "unidad", "fieldtype": "Data", "label": "Unidad"},
+  {"fieldname": "valor_unitario", "fieldtype": "Currency", "label": "Valor unitario", "in_list_view": 1, "columns": 2},
+  {"fieldname": "importe", "fieldtype": "Currency", "label": "Importe", "in_list_view": 1, "columns": 2},
+  {"fieldname": "descuento", "fieldtype": "Currency", "label": "Descuento"},
+  {"fieldname": "iva", "fieldtype": "Currency", "label": "IVA"},
+  {"fieldname": "ieps", "fieldtype": "Currency", "label": "IEPS"},
+  {"fieldname": "iva_retenido", "fieldtype": "Currency", "label": "IVA retenido"},
+  {"fieldname": "isr_retenido", "fieldtype": "Currency", "label": "ISR retenido"}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}

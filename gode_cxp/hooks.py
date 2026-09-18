@@ -22,4 +22,9 @@ doc_events = {
     # Quien pueda escribir facturas necesita CxP Editor o el flujo le deja el formulario en solo
     # lectura; se sella al guardar el usuario, no sólo al migrar.
     "User": {"validate": "gode_cxp.setup.roles.sellar_rol_editor"},
+    # Las cuentas bancarias de proveedor son las que alimentan el archivo TEF: la CLABE, la
+    # naturaleza del pago y el nombre del beneficiario se validan aquí, no en el formulario.
+    "Bank Account": {"validate": "gode_cxp.pagos.cuentas_bancarias.validar_cuenta_bancaria"},
 }
+
+doctype_js = {"Bank Account": "public/js/bank_account.js"}

@@ -33,7 +33,7 @@ class TestCrearFactura(FrappeTestCase):
         pi = frappe.get_doc("Purchase Invoice", pi_name)
         self.assertEqual(pi.docstatus, 0)
         self.assertEqual(pi.supplier, proveedor_por_rfc("AVI900101AB1", ""))
-        self.assertEqual((pi.bill_no, str(pi.bill_date)), ("A1234", "2026-09-10"))
+        self.assertEqual((pi.bill_no, str(pi.bill_date)), ("A-1234", "2026-09-10"))
         self.assertEqual(str(pi.due_date), add_days("2026-09-10", 30))
         self.assertEqual((pi.cfdi_uuid, pi.cfdi_recibido, pi.rfc_emisor), (cfdi.uuid, cfdi.name, "AVI900101AB1"))
         self.assertEqual((pi.metodo_pago_sat, pi.forma_pago_sat), ("PPD", "03"))
@@ -71,6 +71,30 @@ class TestCrearFactura(FrappeTestCase):
         self.assertEqual((nc.is_return, nc.return_against), (1, original.name))
         self.assertAlmostEqual(nc.grand_total, -232.0, places=2)
         self.assertEqual(nc.items[0].qty, -1)
+
+    def test_cantidad_no_exacta(self):
+        cfdi = procesar_xml(ejemplos.CANTIDAD_NO_EXACTA_40, "SAT")
+        pi = frappe.get_doc("Purchase Invoice", crear_factura_desde_cfdi(cfdi.name))
+        self.assertEqual(len(pi.items), 1)
+        self.assertEqual((pi.items[0].qty, pi.items[0].rate), (1, 1000))
+        self.assertIn("30 Kilogramo × 33.33", pi.items[0].description)
+        self.assertAlmostEqual(pi.grand_total, 1160.0, places=2)
+        self.assertEqual(pi.estado_revision, "Recibida")
+
+    def test_nota_de_credito_con_retenciones(self):
+        cfdi = procesar_xml(ejemplos.EGRESO_RETENCIONES_40, "SAT")
+        nc = frappe.get_doc("Purchase Invoice", crear_factura_desde_cfdi(cfdi.name))
+        self.assertEqual(nc.is_return, 1)
+        self.assertAlmostEqual(nc.grand_total, -190.67, places=2)
+        self.assertEqual(nc.estado_revision, "Recibida")
+
+    def test_proveedor_nombre_repetido(self):
+        uno = proveedor_por_rfc("AVI900101AB1", "AVICOLA DEL CARMEN SA DE CV")
+        dos = proveedor_por_rfc("AVI900101AB2", "AVICOLA DEL CARMEN SA DE CV")
+        self.assertNotEqual(uno, dos)
+        self.assertIn("(AVI900101AB2)", frappe.get_doc("Supplier", dos).supplier_name)
+        with self.assertRaises(frappe.ValidationError):
+            proveedor_por_rfc("", "X")
 
     def test_total_que_no_cuadra(self):
         cfdi = procesar_xml(ejemplos.INGRESO_40, "SAT")

@@ -4,7 +4,7 @@ import frappe
 from gode_cxp.cfdi import ejemplos
 
 EMPRESA = "GODE PRUEBAS"
-RFCS_PRUEBA = ("AVI900101AB1", "HESB850101AB1")
+RFCS_PRUEBA = ("AVI900101AB1", "AVI900101AB2", "HESB850101AB1")
 
 
 def _cuenta(nombre, root_type, account_type=None):

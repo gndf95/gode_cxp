@@ -90,3 +90,33 @@ AJENO_40 = INGRESO_40.replace(b'Rfc="GES200101ABC"', b'Rfc="XAXX010101000"').rep
     b'UUID="6f2c3d48-1234-4a5b-9c8d-abcdef012345"', b'UUID="88888888-3333-4444-8555-666666666666"')
 
 SIN_TIMBRE = INGRESO_40.split(b"<cfdi:Complemento>")[0] + b"</cfdi:Comprobante>"
+
+# Nota de credito (egreso) de una persona fisica con retenciones: 200 + 32 IVA - 20 ISR - 21.33 IVA ret = 190.67.
+# Sin CfdiRelacionados a proposito: la nota de credito queda en borrador sin return_against.
+EGRESO_RETENCIONES_40 = b"""<?xml version="1.0" encoding="UTF-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4" xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
+ Version="4.0" Serie="NC" Folio="10" Fecha="2026-09-13T12:00:00" FormaPago="99" MetodoPago="PUE" Moneda="MXN"
+ SubTotal="200.00" Total="190.67" TipoDeComprobante="E" Exportacion="01" LugarExpedicion="03100" Sello="x" NoCertificado="00001000000500000000" Certificado="x">
+  <cfdi:Emisor Rfc="HESB850101AB1" Nombre="BRUNO RICARDO HERNANDEZ SILVA" RegimenFiscal="612"/>
+  <cfdi:Receptor Rfc="GES200101ABC" Nombre="GASTRONOMICA DE ESPECIALIDADES GODE" DomicilioFiscalReceptor="06600" RegimenFiscalReceptor="601" UsoCFDI="G02"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto ClaveProdServ="80101500" Cantidad="1" ClaveUnidad="E48" Unidad="Servicio" Descripcion="Descuento sobre asesoria de cocina" ValorUnitario="200.00" Importe="200.00" ObjetoImp="02">
+      <cfdi:Impuestos>
+        <cfdi:Traslados><cfdi:Traslado Base="200.00" Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.160000" Importe="32.00"/></cfdi:Traslados>
+        <cfdi:Retenciones><cfdi:Retencion Base="200.00" Impuesto="001" TipoFactor="Tasa" TasaOCuota="0.100000" Importe="20.00"/><cfdi:Retencion Base="200.00" Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.106667" Importe="21.33"/></cfdi:Retenciones>
+      </cfdi:Impuestos>
+    </cfdi:Concepto>
+  </cfdi:Conceptos>
+  <cfdi:Impuestos TotalImpuestosRetenidos="41.33" TotalImpuestosTrasladados="32.00">
+    <cfdi:Retenciones><cfdi:Retencion Impuesto="001" Importe="20.00"/><cfdi:Retencion Impuesto="002" Importe="21.33"/></cfdi:Retenciones>
+    <cfdi:Traslados><cfdi:Traslado Base="200.00" Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.160000" Importe="32.00"/></cfdi:Traslados>
+  </cfdi:Impuestos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital Version="1.1" UUID="AAAAAAAA-1111-4222-8333-BBBBBBBBBBBB" FechaTimbrado="2026-09-13T12:01:00" RfcProvCertif="SAT970701NN3" SelloCFD="x" NoCertificadoSAT="00001000000400000000" SelloSAT="x"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>"""
+
+# Cantidad que no divide exacto el importe (1000 / 30): la factura debe caer a 1 unidad.
+CANTIDAD_NO_EXACTA_40 = INGRESO_40.replace(b'Cantidad="10"', b'Cantidad="30"').replace(
+    b'ValorUnitario="100.00"', b'ValorUnitario="33.333333"').replace(
+    b'UUID="6f2c3d48-1234-4a5b-9c8d-abcdef012345"', b'UUID="CCCCCCCC-1111-4222-8333-DDDDDDDDDDDD"')

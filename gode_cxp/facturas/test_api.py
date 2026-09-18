@@ -54,8 +54,11 @@ class TestApi(FrappeTestCase):
         self.assertEqual(len(r["errores"]), 1)
         self.assertIn("malo.xml", r["errores"][0]["archivo"])
         self.assertEqual(len(r["facturas"]), 2)        # solo los dos ingresos propios generan factura
-        for url in urls:
-            self.assertFalse(frappe.db.exists("File", {"file_url": url, "attached_to_doctype": ["in", ["", None]]}), "el archivo temporal se borra")
+        # Frappe le da el mismo file_url a dos subidas con el mismo contenido (a.xml y a2.xml), así
+        # que no basta con borrar la fila que se leyó: no debe quedar NINGUNA fila suelta del lote.
+        sueltos = frappe.get_all("File", filters={"file_url": ["in", urls], "attached_to_doctype": ["in", ["", None]]},
+                                 fields=["name", "file_name", "file_url"])
+        self.assertEqual(sueltos, [], "los archivos temporales de la carga se borran")
 
     def test_zip_con_xml_y_pdf(self):
         contenido = zip_con([("carpeta/F77.xml", ejemplos.INGRESO_33_RETENCIONES),

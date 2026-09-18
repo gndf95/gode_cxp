@@ -31,12 +31,14 @@ def procesar_archivos(file_urls, origen="Carga manual"):
         frappe.throw(_("Se esperaba una lista de archivos."))
 
     resultado = {"nuevos": [], "duplicados": [], "ajenos": [], "errores": [], "facturas": []}
+    temporales = []
     for url in file_urls:
         try:
             archivo = _archivo_del_sitio(url)
         except Exception as e:
             _anotar_error(resultado, str(url), e)
             continue
+        temporales.append(archivo.file_url)
         nombre = archivo.file_name or posixpath.basename(archivo.file_url or "")
         try:
             partes = _desempacar(nombre, _a_bytes(archivo.get_content()))
@@ -45,11 +47,20 @@ def procesar_archivos(file_urls, origen="Carga manual"):
             partes = []
         for xml_nombre, xml_bytes, pdf_bytes in partes:
             _procesar_uno(xml_nombre, xml_bytes, pdf_bytes, origen, resultado)
-        if not archivo.attached_to_doctype:
-            # El archivo de la subida es temporal: el XML (y el PDF) definitivos ya quedaron
-            # adjuntos al CFDI Recibido desde recepcion.procesar_xml.
-            frappe.delete_doc("File", archivo.name, ignore_permissions=True, force=1)
+    _borrar_temporales(temporales)
     return resultado
+
+
+def _borrar_temporales(urls):
+    """El archivo de la subida es temporal: el XML (y el PDF) definitivos ya quedaron adjuntos al
+    CFDI Recibido desde recepcion.procesar_xml. Se borra al final y buscando por file_url porque
+    Frappe le da el MISMO file_url a dos subidas con el mismo contenido
+    (File.validate_duplicate_entry): borrando dentro del bucle, el segundo archivo del lote se
+    quedaría sin nada que leer, y borrando sólo la fila que se leyó quedaría la otra huérfana.
+    Lo que esté adjunto a algo no se toca."""
+    for url in sorted(set(urls)):
+        for name in frappe.get_all("File", filters={"file_url": url, "attached_to_doctype": ["in", ["", None]]}, pluck="name"):
+            frappe.delete_doc("File", name, ignore_permissions=True, force=1)
 
 
 def _archivo_del_sitio(url):

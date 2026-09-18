@@ -106,6 +106,9 @@ class TestApi(FrappeTestCase):
         r = procesar_archivos([publico, de_otro])
         self.assertEqual(r["nuevos"], [])
         self.assertEqual(len(r["errores"]), 2)
+        # El motivo importa: si el rechazo viniera de otra validación la prueba pasaría en falso.
+        for error in r["errores"]:
+            self.assertIn("acabas de subir", error["error"])
         self.assertTrue(frappe.db.exists("File", {"file_url": publico}), "el archivo público sigue ahí")
         self.assertTrue(frappe.db.exists("File", fila_de_otro), "el archivo de otro usuario sigue ahí")
 

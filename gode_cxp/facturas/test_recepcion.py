@@ -68,7 +68,17 @@ class TestRecepcion(FrappeTestCase):
             frappe.db.set_single_value("Configuracion CxP", "rfc_empresa", ejemplos.RFC_EMPRESA)
 
     def test_pdf_se_adjunta(self):
-        doc = procesar_xml(ejemplos.INGRESO_40, "Correo", "A1234.xml", pdf_bytes=b"%PDF-1.4 x")
+        # Frappe valida que un adjunto con file_type PDF sea un PDF real (revisa JS embebido),
+        # así que se necesita un PDF mínimo pero válido, no bytes cualesquiera con encabezado %PDF-.
+        from io import BytesIO
+
+        from pypdf import PdfWriter
+
+        buf = BytesIO()
+        PdfWriter().write(buf)
+        pdf_bytes = buf.getvalue()
+
+        doc = procesar_xml(ejemplos.INGRESO_40, "Correo", "A1234.xml", pdf_bytes=pdf_bytes)
         doc = frappe.get_doc("CFDI Recibido", doc.name)
         self.assertTrue(doc.archivo_xml)
         self.assertTrue(doc.archivo_pdf)

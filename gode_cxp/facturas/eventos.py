@@ -5,6 +5,8 @@ from frappe.utils import now_datetime
 
 
 def validar_factura(doc, method=None):
+    if doc.is_new() and doc.get("amended_from"):
+        _reiniciar_revision_de_la_enmienda(doc)
     if doc.cfdi_recibido and not doc.estado_revision:
         doc.estado_revision = "Recibida"
     if doc.recepcion_confirmada and not doc.recepcion_confirmada_por:
@@ -13,6 +15,19 @@ def validar_factura(doc, method=None):
     if not doc.recepcion_confirmada:
         doc.recepcion_confirmada_por = None
         doc.recepcion_confirmada_el = None
+
+
+def _reiniciar_revision_de_la_enmienda(doc):
+    """El botón 'Amend' del escritorio copia hasta los campos no_copy
+    (frappe/public/js/frappe/model/create_new.js: `!from_amend && df.no_copy`), así que la enmienda
+    llegaría con el UUID del CFDI —índice único, duplicado— y con el estado 'Aprobada', que
+    frappe.model.workflow.validate_workflow rechaza por no venir de ninguna transición.
+    La enmienda se revisa desde cero: el UUID se queda en la factura cancelada, que es el documento
+    que quedó timbrado; el enlace al CFDI Recibido sí se conserva para que siga bajo el flujo."""
+    doc.cfdi_uuid = None
+    doc.estado_revision = None
+    doc.recepcion_confirmada = 0
+    doc.nota_aclaracion = None
 
 
 def antes_de_enviar(doc, method=None):

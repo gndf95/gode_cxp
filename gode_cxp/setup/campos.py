@@ -4,6 +4,11 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 ESTADOS_REVISION = "\nRecibida\nEn revisión\nEn aclaración\nRevisada\nAprobada\nRechazada\nError de lectura"
 
+# El sello del CFDI y la revisión llevan no_copy: duplicar una factura no puede arrastrar el UUID
+# (índice único) ni el estado ya aprobado. Ojo: al ENMENDAR, el escritorio copia hasta los campos
+# no_copy (frappe/public/js/frappe/model/create_new.js: no_copy sólo se respeta si la copia no viene
+# de un amend), así que la enmienda la limpia además facturas/eventos.py.
+
 CAMPOS = {
     "Supplier": [
         {"fieldname": "sec_cxp", "label": "Cuentas por pagar", "fieldtype": "Section Break", "insert_after": "supplier_group"},
@@ -18,20 +23,20 @@ CAMPOS = {
     ],
     "Purchase Invoice": [
         {"fieldname": "sec_cfdi", "label": "CFDI", "fieldtype": "Section Break", "insert_after": "bill_date", "collapsible": 0},
-        {"fieldname": "cfdi_uuid", "label": "UUID (folio fiscal)", "fieldtype": "Data", "insert_after": "sec_cfdi", "unique": 1, "read_only": 1, "in_standard_filter": 1, "length": 36},
-        {"fieldname": "cfdi_recibido", "label": "CFDI recibido", "fieldtype": "Link", "options": "CFDI Recibido", "insert_after": "cfdi_uuid", "read_only": 1},
+        {"fieldname": "cfdi_uuid", "label": "UUID (folio fiscal)", "fieldtype": "Data", "insert_after": "sec_cfdi", "unique": 1, "read_only": 1, "in_standard_filter": 1, "length": 36, "no_copy": 1},
+        {"fieldname": "cfdi_recibido", "label": "CFDI recibido", "fieldtype": "Link", "options": "CFDI Recibido", "insert_after": "cfdi_uuid", "read_only": 1, "no_copy": 1},
         {"fieldname": "rfc_emisor", "label": "RFC emisor", "fieldtype": "Data", "insert_after": "cfdi_recibido", "read_only": 1},
         {"fieldname": "col_cfdi", "fieldtype": "Column Break", "insert_after": "rfc_emisor"},
         {"fieldname": "metodo_pago_sat", "label": "Método de pago SAT", "fieldtype": "Data", "insert_after": "col_cfdi", "read_only": 1},
         {"fieldname": "forma_pago_sat", "label": "Forma de pago SAT", "fieldtype": "Data", "insert_after": "metodo_pago_sat", "read_only": 1},
         {"fieldname": "complemento_recibido", "label": "Complemento de pago recibido", "fieldtype": "Check", "insert_after": "forma_pago_sat", "read_only": 1, "allow_on_submit": 1},
         {"fieldname": "sec_revision", "label": "Revisión", "fieldtype": "Section Break", "insert_after": "complemento_recibido"},
-        {"fieldname": "estado_revision", "label": "Estado de revisión", "fieldtype": "Select", "options": ESTADOS_REVISION, "insert_after": "sec_revision", "read_only": 1, "in_list_view": 1, "in_standard_filter": 1, "allow_on_submit": 1},
-        {"fieldname": "recepcion_confirmada", "label": "Recepción del producto/servicio confirmada", "fieldtype": "Check", "insert_after": "estado_revision"},
-        {"fieldname": "recepcion_confirmada_por", "label": "Recepción confirmada por", "fieldtype": "Link", "options": "User", "insert_after": "recepcion_confirmada", "read_only": 1},
-        {"fieldname": "recepcion_confirmada_el", "label": "Recepción confirmada el", "fieldtype": "Datetime", "insert_after": "recepcion_confirmada_por", "read_only": 1},
+        {"fieldname": "estado_revision", "label": "Estado de revisión", "fieldtype": "Select", "options": ESTADOS_REVISION, "insert_after": "sec_revision", "read_only": 1, "in_list_view": 1, "in_standard_filter": 1, "allow_on_submit": 1, "no_copy": 1},
+        {"fieldname": "recepcion_confirmada", "label": "Recepción del producto/servicio confirmada", "fieldtype": "Check", "insert_after": "estado_revision", "no_copy": 1},
+        {"fieldname": "recepcion_confirmada_por", "label": "Recepción confirmada por", "fieldtype": "Link", "options": "User", "insert_after": "recepcion_confirmada", "read_only": 1, "no_copy": 1},
+        {"fieldname": "recepcion_confirmada_el", "label": "Recepción confirmada el", "fieldtype": "Datetime", "insert_after": "recepcion_confirmada_por", "read_only": 1, "no_copy": 1},
         {"fieldname": "col_revision", "fieldtype": "Column Break", "insert_after": "recepcion_confirmada_el"},
-        {"fieldname": "nota_aclaracion", "label": "Nota de aclaración / rechazo", "fieldtype": "Text", "insert_after": "col_revision", "allow_on_submit": 1},
+        {"fieldname": "nota_aclaracion", "label": "Nota de aclaración / rechazo", "fieldtype": "Text", "insert_after": "col_revision", "allow_on_submit": 1, "no_copy": 1},
     ],
 }
 

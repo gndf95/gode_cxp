@@ -49,7 +49,11 @@ def limpiar():
     # Red de seguridad: limpiar() borra CFDI y facturas en bloque, nunca debe tocar producción.
     if frappe.db.get_single_value("Configuracion CxP", "empresa") != EMPRESA:
         frappe.throw(f"limpiar() solo corre en el sitio de pruebas (Configuración CxP.empresa = {EMPRESA})")
-    for dt, filtros in (("Purchase Invoice", {"cfdi_uuid": ["!=", ""]}), ("CFDI Recibido", {})):
+    # Dos filtros para Purchase Invoice: la enmienda de una factura pierde el UUID (ver
+    # facturas/eventos.py) pero conserva el enlace al CFDI, y también hay que borrarla.
+    for dt, filtros in (("Purchase Invoice", {"cfdi_uuid": ["!=", ""]}),
+                        ("Purchase Invoice", {"cfdi_recibido": ["!=", ""]}),
+                        ("CFDI Recibido", {})):
         for name in frappe.get_all(dt, filters=filtros, pluck="name"):
             doc = frappe.get_doc(dt, name)
             if doc.docstatus == 1:

@@ -40,7 +40,8 @@
   {"fieldname": "modo_pruebas_correo", "fieldtype": "Check", "label": "Modo pruebas: no enviar correos", "default": "0"}
  ],
  "permissions": [
-  {"role": "System Manager", "read": 1, "write": 1, "create": 1, "print": 1, "email": 1, "share": 1}
+  {"role": "System Manager", "read": 1, "write": 1, "create": 1, "print": 1, "email": 1, "share": 1},
+  {"role": "CxP Tesoreria", "read": 1}
  ],
  "sort_field": "modified",
  "sort_order": "DESC"

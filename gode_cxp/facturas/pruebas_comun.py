@@ -2,9 +2,12 @@
 import frappe
 
 from gode_cxp.cfdi import ejemplos
-from gode_cxp.setup.produccion import CUENTAS, configurar_empresa
+from gode_cxp.setup.produccion import CUENTAS, MODO_PAGO_TRANSFERENCIA, configurar_empresa
 
 EMPRESA = "GODE PRUEBAS"
+# Cuenta contable de banco que el plan de cuentas mexicano de GODE PRUEBAS NO trae (sólo trae el
+# grupo "BANCOS E INTITUCIONES FINANCIERAS"). En producción la cuenta real ya existe en el catálogo.
+CUENTA_BANCO_PRUEBAS = "Banco pruebas"
 RFCS_PRUEBA = ("AVI900101AB1", "AVI900101AB2", "HESB850101AB1")
 USUARIOS_PRUEBA = ("prueba.revisor@cxp.local", "prueba.tesoreria@cxp.local", "prueba.conta@cxp.local",
                    "prueba.sysadmin@cxp.local", "prueba.contable@cxp.local")
@@ -19,8 +22,33 @@ def preparar_sitio_pruebas():
     configurar_empresa(EMPRESA, ejemplos.RFC_EMPRESA, dry_run=False)
     if not frappe.db.get_single_value("Configuracion CxP", "modo_pruebas_correo"):
         frappe.db.set_single_value("Configuracion CxP", "modo_pruebas_correo", 1)
+    asegurar_catalogo_de_pagos()
     conf = frappe.get_doc("Configuracion CxP")
     return {campo: conf.get(campo) for campo in CUENTAS}
+
+
+def asegurar_catalogo_de_pagos():
+    """Lo que `configurar_pagos` da por hecho del catálogo y este sitio de pruebas no trae: una
+    cuenta contable de banco de detalle y el modo de pago de las transferencias. En producción las
+    dos cosas existen de antes (la cuenta real del banco y el modo de pago del alta de ERPNext), así
+    que esto es fixture de pruebas, no configuración de la app. Idempotente."""
+    hizo_falta = False
+    if not frappe.db.exists("Mode of Payment", MODO_PAGO_TRANSFERENCIA):
+        frappe.get_doc({"doctype": "Mode of Payment", "mode_of_payment": MODO_PAGO_TRANSFERENCIA,
+                        "type": "Bank"}).insert(ignore_permissions=True)
+        hizo_falta = True
+    if not frappe.db.get_value("Account", {"company": EMPRESA, "account_type": "Bank", "is_group": 0}, "name"):
+        padre = frappe.db.get_value("Account", {"company": EMPRESA, "is_group": 1, "account_type": "Bank"},
+                                    "name", order_by="lft")
+        if not padre:
+            frappe.throw(f"El catálogo de '{EMPRESA}' no tiene ningún grupo de cuentas de tipo Bank "
+                         f"donde colgar '{CUENTA_BANCO_PRUEBAS}'.")
+        frappe.get_doc({"doctype": "Account", "account_name": CUENTA_BANCO_PRUEBAS, "parent_account": padre,
+                        "company": EMPRESA, "root_type": "Asset", "is_group": 0,
+                        "account_type": "Bank"}).insert(ignore_permissions=True)
+        hizo_falta = True
+    if hizo_falta:
+        frappe.db.commit()
 
 
 def limpiar():

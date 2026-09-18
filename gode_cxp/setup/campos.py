@@ -37,6 +37,38 @@ CAMPOS = {
         {"fieldname": "recepcion_confirmada_el", "label": "Recepción confirmada el", "fieldtype": "Datetime", "insert_after": "recepcion_confirmada_por", "read_only": 1, "no_copy": 1},
         {"fieldname": "col_revision", "fieldtype": "Column Break", "insert_after": "recepcion_confirmada_el"},
         {"fieldname": "nota_aclaracion", "label": "Nota de aclaración / rechazo", "fieldtype": "Text", "insert_after": "col_revision", "allow_on_submit": 1, "no_copy": 1},
+        # En qué lote de pago entró la factura. Se llena al armar el lote y se limpia al cancelarlo,
+        # así que va allow_on_submit (la factura ya está confirmada) y no_copy (una enmienda o una
+        # copia no puede heredar el lote de otra factura).
+        {"fieldname": "en_lote", "label": "En lote de pago", "fieldtype": "Link", "options": "Lote de Pago", "read_only": 1, "allow_on_submit": 1,
+         "no_copy": 1, "in_standard_filter": 1, "insert_after": "nota_aclaracion"},
+    ],
+    # Los datos que el archivo TEF de Banamex necesita de cada cuenta. La CLABE va en campo propio y
+    # no en el `iban` estándar: ERPNext valida el IBAN con el algoritmo europeo y la CLABE no lo pasa.
+    "Bank Account": [
+        {"fieldname": "sec_tef", "label": "Datos para TEF Banamex", "fieldtype": "Section Break", "insert_after": "bank_account_no",
+         "depends_on": "eval:doc.party_type=='Supplier'"},
+        {"fieldname": "clabe", "label": "CLABE (18 dígitos)", "fieldtype": "Data", "length": 18, "insert_after": "sec_tef", "in_list_view": 1},
+        {"fieldname": "tipo_pago_tef", "label": "Naturaleza TEF", "fieldtype": "Select", "options": "\n06\n12", "read_only": 1, "insert_after": "clabe",
+         "description": "06 = cuenta Banamex (sucursal + cuenta); 12 = interbancario por CLABE"},
+        {"fieldname": "sucursal_banamex", "label": "Sucursal Banamex (4)", "fieldtype": "Data", "length": 4, "insert_after": "tipo_pago_tef", "depends_on": "eval:doc.tipo_pago_tef=='06'"},
+        {"fieldname": "cuenta_banamex", "label": "Cuenta Banamex (7)", "fieldtype": "Data", "length": 7, "insert_after": "sucursal_banamex", "depends_on": "eval:doc.tipo_pago_tef=='06'"},
+        {"fieldname": "col_tef", "fieldtype": "Column Break", "insert_after": "cuenta_banamex"},
+        {"fieldname": "nombre_tef", "label": "Beneficiario en el archivo (55)", "fieldtype": "Data", "length": 55, "insert_after": "col_tef",
+         "description": "Mayúsculas sin acentos. Física: NOMBRES,PATERNO/MATERNO · Moral: PRIMERA,RESTO DE LA RAZON SOCIAL/"},
+        {"fieldname": "verificada", "label": "Verificada por Tesorería", "fieldtype": "Check", "read_only": 1, "insert_after": "nombre_tef", "in_list_view": 1},
+        {"fieldname": "verificada_por", "label": "Verificada por", "fieldtype": "Link", "options": "User", "read_only": 1, "insert_after": "verificada"},
+        {"fieldname": "verificada_el", "label": "Verificada el", "fieldtype": "Datetime", "read_only": 1, "insert_after": "verificada_por"},
+    ],
+    # El pago se crea al aplicar el resultado del banco: el lote, la autorización y la clave de
+    # rastreo se escriben sobre el Payment Entry ya confirmado, de ahí el allow_on_submit.
+    "Payment Entry": [
+        {"fieldname": "sec_lote", "label": "Lote de pago Banamex", "fieldtype": "Section Break", "insert_after": "reference_date", "collapsible": 1},
+        {"fieldname": "lote_pago", "label": "Lote de pago", "fieldtype": "Link", "options": "Lote de Pago", "read_only": 1, "allow_on_submit": 1, "insert_after": "sec_lote", "in_standard_filter": 1},
+        {"fieldname": "autorizacion_banco", "label": "Autorización del banco", "fieldtype": "Data", "allow_on_submit": 1, "insert_after": "lote_pago"},
+        {"fieldname": "col_lote", "fieldtype": "Column Break", "insert_after": "autorizacion_banco"},
+        {"fieldname": "clave_rastreo", "label": "Clave de rastreo", "fieldtype": "Data", "allow_on_submit": 1, "insert_after": "col_lote"},
+        {"fieldname": "comprobante", "label": "Comprobante del banco", "fieldtype": "Attach", "allow_on_submit": 1, "insert_after": "clave_rastreo"},
     ],
 }
 

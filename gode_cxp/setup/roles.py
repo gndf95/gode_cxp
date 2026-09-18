@@ -23,16 +23,23 @@ PERMISOS = {
         "Purchase Invoice": ("read", "write", "create", "print", "email", "report", "export", "select"),
         "Supplier": ("read", "select"), "Item": ("read", "select"), "Account": ("read", "select"), "Company": ("read", "select"),
         "Purchase Order": ("read", "select"), "Purchase Receipt": ("read", "select"), "File": ("read", "write", "create"),
+        # Quien revisa no paga: ve la cuenta bancaria y el pago para entender el estado de la factura.
+        "Bank Account": ("read", "select"), "Bank": ("read", "select"), "Payment Entry": ("read", "select"),
     },
     "CxP Tesoreria": {
         "Purchase Invoice": ("read", "write", "create", "submit", "cancel", "amend", "print", "email", "report", "export", "select"),
         "Supplier": ("read", "write", "create", "print", "report", "export", "select"), "Item": ("read", "select"), "Account": ("read", "select"),
         "Company": ("read", "select"), "Purchase Order": ("read", "select"), "Purchase Receipt": ("read", "select"), "File": ("read", "write", "create"),
-        "Payment Entry": ("read", "report", "select"), "Bank Account": ("read", "select"),
+        # Tesorería es la que da de alta y verifica las cuentas bancarias de los proveedores y la que
+        # registra los pagos cuando el banco los aplica, así que escribe Bank Account y Payment Entry.
+        "Payment Entry": ("read", "write", "create", "submit", "cancel", "print", "email", "report", "export", "select"),
+        "Bank Account": ("read", "write", "create", "report", "export", "select"),
+        "Bank": ("read", "select"), "Mode of Payment": ("read", "select"),
     },
     "CxP Contabilidad": {
         "Purchase Invoice": ("read", "print", "report", "export", "select"), "Supplier": ("read", "report", "select"),
         "Payment Entry": ("read", "report", "export", "select"), "Account": ("read", "select"), "Company": ("read", "select"),
+        "Bank Account": ("read", "report", "select"),
     },
 }
 

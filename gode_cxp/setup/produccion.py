@@ -1,6 +1,8 @@
 """Configuración contable y de catálogos de una empresa para cuentas por pagar.
 
-`configurar_empresa()` es idempotente y trae dry-run:
+Dos funciones, con el mismo contrato: `configurar_empresa()` (contabilidad y catálogos de los CFDI)
+y `configurar_pagos()` (banco de cargo y datos del archivo TEF de Banamex). Las dos son
+idempotentes y traen dry-run:
 
   - con `dry_run=True` (el valor por omisión) NO escribe nada -- ni siquiera hace commit -- y
     devuelve la lista de frases de lo que haría, para que una persona la lea antes de aplicarla;
@@ -83,6 +85,24 @@ CUENTAS = {
 }
 
 # Cómo se nombran en el reporte los campos de Configuracion CxP que no son cuentas.
+BANCO_EMPRESA = "Banamex"
+NOMBRE_CUENTA_EMPRESA = "Banamex GODE"
+MODO_PAGO_TRANSFERENCIA = "Transferencia bancaria"
+REFERENCIA_POR_FECHA = "Fecha del lote"
+
+# Cómo se nombran en el reporte los campos bancarios de Configuracion CxP.
+ETIQUETAS_BANCO = {
+    "contrato_banamex": "contrato Banamex",
+    "cuenta_cargo_sucursal": "sucursal de cargo",
+    "cuenta_cargo_numero": "cuenta de cargo",
+    "nombre_empresa_tef": "nombre de la empresa en el TEF",
+    "concepto_tef": "concepto del TEF",
+    "referencia_numerica_modo": "modo de referencia numérica",
+    "cuenta_banco_erp": "cuenta contable del banco",
+    "cuenta_bancaria_empresa": "cuenta bancaria de la empresa",
+    "modo_pago_transferencia": "modo de pago de las transferencias",
+}
+
 ETIQUETAS = {
     "empresa": "empresa",
     "rfc_empresa": "RFC de la empresa",
@@ -144,6 +164,85 @@ def configurar_empresa(company, rfc, dry_run=True, cuentas=None):
         frappe.db.commit()
     return {"dry_run": dry_run, "empresa": company, "acciones": acciones,
             "resumen": _resumen(acciones, dry_run)}
+
+
+def configurar_pagos(company, contrato, sucursal, cuenta, nombre_tef, concepto, cuenta_banco_erp, dry_run=True):
+    """Banco y cuenta de cargo de la empresa + datos del archivo TEF. Idempotente; dry_run no escribe.
+
+    Devuelve el mismo contrato de reporte que `configurar_empresa`: {"acciones", "dry_run",
+    "resumen"}, con `acciones` vacía cuando no hay nada por hacer.
+
+    `cuenta_banco_erp` es la cuenta CONTABLE del banco de cargo (la del catálogo de la empresa);
+    de ella se cuelga el `Bank Account` "Banamex GODE - Banamex", que es la cuenta bancaria con la
+    que ERPNext registra los pagos.
+    """
+    _validar_datos_tef(contrato, sucursal, cuenta, nombre_tef, concepto)
+    if not frappe.db.exists("Company", company):
+        frappe.throw(_("No existe la empresa {0}").format(company))
+    cta = frappe.db.get_value("Account", cuenta_banco_erp, ["company", "account_type", "is_group"], as_dict=True)
+    if not cta or cta.company != company or cta.is_group:
+        frappe.throw(_("La cuenta contable del banco {0} debe existir, ser de {1} y no ser grupo")
+                     .format(cuenta_banco_erp, company))
+    acciones = []
+    # El account_type sólo se avisa, no se rechaza: el catálogo es de la empresa, igual que en
+    # `configurar_empresa` con el root_type de las cuentas de impuestos.
+    if cta.account_type != "Bank":
+        acciones.append(f"REVISAR: la cuenta contable '{cuenta_banco_erp}' no es de tipo Bank")
+    if not frappe.db.exists("Bank", BANCO_EMPRESA):
+        acciones.append(f"Crear el banco '{BANCO_EMPRESA}'")
+        if not dry_run:
+            frappe.get_doc({"doctype": "Bank", "bank_name": BANCO_EMPRESA}).insert(ignore_permissions=True)
+    # El nombre del Bank Account lo arma ERPNext con account_name + " - " + bank (autoname).
+    nombre_cuenta = f"{NOMBRE_CUENTA_EMPRESA} - {BANCO_EMPRESA}"
+    if not frappe.db.exists("Bank Account", nombre_cuenta):
+        acciones.append(f"Crear la cuenta bancaria de la empresa '{nombre_cuenta}' ({sucursal}-{cuenta}) "
+                        f"ligada a '{cuenta_banco_erp}'")
+        if not dry_run:
+            frappe.get_doc({"doctype": "Bank Account", "account_name": NOMBRE_CUENTA_EMPRESA,
+                            "bank": BANCO_EMPRESA, "is_company_account": 1, "company": company,
+                            "account": cuenta_banco_erp, "bank_account_no": f"{sucursal}{cuenta}",
+                            "branch_code": sucursal}).insert(ignore_permissions=True)
+    conf = frappe.get_doc("Configuracion CxP")
+    # La referencia numérica y el modo de pago se respetan si ya están puestos a mano en el sitio;
+    # sólo se rellenan cuando están vacíos.
+    deseado = {"contrato_banamex": contrato, "cuenta_cargo_sucursal": sucursal, "cuenta_cargo_numero": cuenta,
+               "nombre_empresa_tef": nombre_tef, "concepto_tef": concepto,
+               "referencia_numerica_modo": conf.referencia_numerica_modo or REFERENCIA_POR_FECHA,
+               "cuenta_banco_erp": cuenta_banco_erp, "cuenta_bancaria_empresa": nombre_cuenta,
+               "modo_pago_transferencia": conf.modo_pago_transferencia or MODO_PAGO_TRANSFERENCIA}
+    if not frappe.db.exists("Mode of Payment", deseado["modo_pago_transferencia"]):
+        frappe.throw(_("No existe el modo de pago {0}: créalo (tipo Bank) antes de configurar los pagos.")
+                     .format(deseado["modo_pago_transferencia"]))
+    cambios = {k: v for k, v in deseado.items() if (conf.get(k) or None) != (v or None)}
+    for k, v in cambios.items():
+        acciones.append(f"Configuración CxP: poner '{v}' como {ETIQUETAS_BANCO[k]} "
+                        f"(ahora dice '{conf.get(k) or 'vacío'}')")
+    if not dry_run and cambios:
+        conf.update(cambios)
+        conf.flags.ignore_permissions = True
+        conf.save()
+    if not dry_run and acciones:
+        frappe.db.commit()
+    return {"acciones": acciones, "dry_run": dry_run, "resumen": _resumen(acciones, dry_run)}
+
+
+def _validar_datos_tef(contrato, sucursal, cuenta, nombre_tef, concepto):
+    """Revisa la FORMA de los datos del banco antes de escribir nada. El archivo TEF es de posiciones
+    fijas: un contrato de 11 dígitos o un nombre con acentos hacen que Banamex rechace el archivo
+    entero, así que se atajan aquí y no al generarlo."""
+    errores = []
+    if not re.fullmatch(r"\d{12}", contrato or ""):
+        errores.append("el contrato Banamex debe tener 12 dígitos")
+    if not re.fullmatch(r"\d{4}", sucursal or ""):
+        errores.append("la sucursal de cargo debe tener 4 dígitos")
+    if not re.fullmatch(r"\d{7}", cuenta or ""):
+        errores.append("la cuenta de cargo debe tener 7 dígitos")
+    if not re.fullmatch(r"[A-Z0-9 ,/]{1,36}", nombre_tef or ""):
+        errores.append("el nombre de la empresa para el TEF: máximo 36, mayúsculas sin acentos ni puntos")
+    if not (concepto or "").strip() or len(concepto) > 20:
+        errores.append("el concepto del TEF: 1 a 20 caracteres")
+    if errores:
+        frappe.throw(_("Datos del banco mal formados: {0}").format("; ".join(errores)))
 
 
 def _validar_rfc(rfc):

@@ -1,0 +1,37 @@
+{
+ "doctype": "DocType",
+ "name": "Lote de Pago",
+ "module": "Cuentas por Pagar",
+ "engine": "InnoDB",
+ "autoname": "naming_series:",
+ "is_submittable": 1,
+ "track_changes": 1,
+ "field_order": [
+  "naming_series",
+  "company",
+  "fecha_pago",
+  "naturaleza",
+  "col_lote",
+  "estado_lote",
+  "total_lote",
+  "amended_from"
+ ],
+ "fields": [
+  {"fieldname": "naming_series", "fieldtype": "Select", "label": "Serie", "options": "LOTE-.YYYY.-.####", "default": "LOTE-.YYYY.-.####", "hidden": 1},
+  {"fieldname": "company", "fieldtype": "Link", "label": "Empresa", "options": "Company", "reqd": 1},
+  {"fieldname": "fecha_pago", "fieldtype": "Date", "label": "Fecha de pago", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "naturaleza", "fieldtype": "Select", "label": "Naturaleza", "options": "\n06\n12", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1, "description": "06 = Banamex a Banamex; 12 = interbancario SPEI"},
+  {"fieldname": "col_lote", "fieldtype": "Column Break"},
+  {"fieldname": "estado_lote", "fieldtype": "Select", "label": "Estado del lote", "options": "Preparado\nAutorizado\nExportado\nTransmitido\nAplicado\nParcial\nRechazado\nCancelado", "default": "Preparado", "read_only": 1, "allow_on_submit": 1, "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "total_lote", "fieldtype": "Currency", "label": "Total del lote", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "amended_from", "fieldtype": "Link", "label": "Enmienda de", "options": "Lote de Pago", "read_only": 1, "no_copy": 1, "print_hide": 1}
+ ],
+ "permissions": [
+  {"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1, "submit": 1, "cancel": 1, "amend": 1, "print": 1, "email": 1, "report": 1, "export": 1, "share": 1, "select": 1},
+  {"role": "CxP Tesoreria", "read": 1, "write": 1, "create": 1, "submit": 1, "cancel": 1, "amend": 1, "print": 1, "email": 1, "report": 1, "export": 1, "select": 1},
+  {"role": "CxP Revisor", "read": 1, "print": 1, "report": 1, "select": 1},
+  {"role": "CxP Contabilidad", "read": 1, "print": 1, "report": 1, "export": 1, "select": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}

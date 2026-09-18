@@ -21,7 +21,19 @@
   "cuenta_ret_isr",
   "dias_credito_default",
   "sec_pruebas",
-  "modo_pruebas_correo"
+  "modo_pruebas_correo",
+  "sec_banco",
+  "contrato_banamex",
+  "cuenta_cargo_sucursal",
+  "cuenta_cargo_numero",
+  "cuenta_banco_erp",
+  "cuenta_bancaria_empresa",
+  "modo_pago_transferencia",
+  "col_banco",
+  "nombre_empresa_tef",
+  "concepto_tef",
+  "referencia_numerica_modo",
+  "referencia_numerica_fija"
  ],
  "fields": [
   {"fieldname": "sec_empresa", "fieldtype": "Section Break", "label": "Empresa y contabilidad"},
@@ -37,7 +49,19 @@
   {"fieldname": "cuenta_ret_isr", "fieldtype": "Link", "label": "Cuenta ISR retenido", "options": "Account"},
   {"fieldname": "dias_credito_default", "fieldtype": "Int", "label": "Días de crédito por defecto", "default": "30"},
   {"fieldname": "sec_pruebas", "fieldtype": "Section Break", "label": "Pruebas"},
-  {"fieldname": "modo_pruebas_correo", "fieldtype": "Check", "label": "Modo pruebas: no enviar correos", "default": "0"}
+  {"fieldname": "modo_pruebas_correo", "fieldtype": "Check", "label": "Modo pruebas: no enviar correos", "default": "0"},
+  {"fieldname": "sec_banco", "fieldtype": "Section Break", "label": "Banco de cargo y archivo TEF"},
+  {"fieldname": "contrato_banamex", "fieldtype": "Data", "label": "Contrato Banamex (12 dígitos)", "length": 12},
+  {"fieldname": "cuenta_cargo_sucursal", "fieldtype": "Data", "label": "Sucursal de la cuenta de cargo (4 dígitos)", "length": 4},
+  {"fieldname": "cuenta_cargo_numero", "fieldtype": "Data", "label": "Cuenta de cargo (7 dígitos)", "length": 7},
+  {"fieldname": "cuenta_banco_erp", "fieldtype": "Link", "label": "Cuenta contable del banco de cargo", "options": "Account"},
+  {"fieldname": "cuenta_bancaria_empresa", "fieldtype": "Link", "label": "Cuenta bancaria de la empresa", "options": "Bank Account"},
+  {"fieldname": "modo_pago_transferencia", "fieldtype": "Link", "label": "Modo de pago de las transferencias", "options": "Mode of Payment", "default": "Transferencia bancaria"},
+  {"fieldname": "col_banco", "fieldtype": "Column Break"},
+  {"fieldname": "nombre_empresa_tef", "fieldtype": "Data", "label": "Nombre de la empresa en el archivo TEF (36)", "length": 36, "description": "Mayúsculas sin acentos ni puntos; es el ordenante que ve el banco."},
+  {"fieldname": "concepto_tef", "fieldtype": "Data", "label": "Concepto del archivo TEF (20)", "length": 20},
+  {"fieldname": "referencia_numerica_modo", "fieldtype": "Select", "label": "Referencia numérica", "options": "Fecha del lote\nFija", "default": "Fecha del lote"},
+  {"fieldname": "referencia_numerica_fija", "fieldtype": "Data", "label": "Referencia numérica fija (7 dígitos)", "length": 7, "depends_on": "eval:doc.referencia_numerica_modo=='Fija'"}
  ],
  "permissions": [
   {"role": "System Manager", "read": 1, "write": 1, "create": 1, "print": 1, "email": 1, "share": 1},

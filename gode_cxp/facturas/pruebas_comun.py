@@ -74,7 +74,17 @@ def limpiar():
             if doc.docstatus == 1:
                 doc.cancel()
             frappe.delete_doc(dt, name, force=1, ignore_permissions=True, delete_permanently=True)
-    for name in frappe.get_all("Supplier", filters={"tax_id": ["in", RFCS_PRUEBA]}, pluck="name"):
+    # Las cuentas bancarias de los proveedores de prueba se borran ANTES que los proveedores: un
+    # Bank Account que apunta al proveedor bloquea su borrado (Link en uso). Y hay que borrarlas
+    # aunque el proveedor sobreviva: el name de Bank Account es account_name + " - " + banco, así
+    # que la cuenta que dejó una prueba choca por nombre repetido con la que crea la siguiente.
+    proveedores = frappe.get_all("Supplier", filters={"tax_id": ["in", RFCS_PRUEBA]}, pluck="name")
+    if proveedores:
+        for name in frappe.get_all("Bank Account",
+                                   filters={"party_type": "Supplier", "party": ["in", proveedores]},
+                                   pluck="name"):
+            frappe.delete_doc("Bank Account", name, force=1, ignore_permissions=True, delete_permanently=True)
+    for name in proveedores:
         frappe.delete_doc("Supplier", name, force=1, ignore_permissions=True)
     # Los usuarios de prueba no deben quedar vivos en el sitio; test_flujo los vuelve a crear.
     for correo in USUARIOS_PRUEBA:

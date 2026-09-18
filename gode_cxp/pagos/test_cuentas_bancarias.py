@@ -53,17 +53,11 @@ class TestCuentaBancaria(FrappeTestCase):
         pruebas_comun.preparar_sitio_pruebas()
 
     def setUp(self):
+        # limpiar() borra también las cuentas bancarias de los proveedores de prueba: el name de
+        # Bank Account es account_name + " - " + banco, así que sin eso la segunda prueba de la
+        # clase chocaría con la cuenta que dejó la primera.
         pruebas_comun.limpiar()
-        # limpiar() todavía no borra las cuentas bancarias de los proveedores de prueba (eso es de la
-        # Task 4) y el name de Bank Account es account_name + " - " + banco: sin esto, la segunda
-        # prueba de la clase choca con la cuenta que dejó la primera.
-        self._borrar_cuentas_de_proveedor()
         self.proveedor = proveedor_por_rfc("AVI900101AB1", "Avícola del Carmen SA de CV")
-
-    @staticmethod
-    def _borrar_cuentas_de_proveedor():
-        for name in frappe.get_all("Bank Account", filters={"party_type": "Supplier"}, pluck="name"):
-            frappe.delete_doc("Bank Account", name, force=1, ignore_permissions=True, delete_permanently=True)
 
     def _cuenta(self, **campos):
         datos = {"doctype": "Bank Account", "account_name": "Avícola prueba", "bank": "Banorte", "party_type": "Supplier", "party": self.proveedor}

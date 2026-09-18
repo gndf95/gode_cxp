@@ -12,3 +12,10 @@ before_migrate = ["gode_cxp.setup.instalar.asegurar_roles"]
 # Cada migración deja la configuración (campos, roles, flujo, workspace) como debe estar.
 after_migrate = ["gode_cxp.setup.instalar.asegurar_configuracion"]
 after_install = ["gode_cxp.setup.instalar.asegurar_configuracion"]
+
+doc_events = {
+    "Purchase Invoice": {
+        "validate": "gode_cxp.facturas.eventos.validar_factura",
+        "before_submit": "gode_cxp.facturas.eventos.antes_de_enviar",
+    }
+}

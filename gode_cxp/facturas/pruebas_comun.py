@@ -5,6 +5,7 @@ from gode_cxp.cfdi import ejemplos
 
 EMPRESA = "GODE PRUEBAS"
 RFCS_PRUEBA = ("AVI900101AB1", "AVI900101AB2", "HESB850101AB1")
+USUARIOS_PRUEBA = ("prueba.revisor@cxp.local", "prueba.tesoreria@cxp.local", "prueba.conta@cxp.local")
 
 
 def _cuenta(nombre, root_type, account_type=None):
@@ -56,4 +57,8 @@ def limpiar():
             frappe.delete_doc(dt, name, force=1, ignore_permissions=True, delete_permanently=True)
     for name in frappe.get_all("Supplier", filters={"tax_id": ["in", RFCS_PRUEBA]}, pluck="name"):
         frappe.delete_doc("Supplier", name, force=1, ignore_permissions=True)
+    # Los usuarios de prueba no deben quedar vivos en el sitio; test_flujo los vuelve a crear.
+    for correo in USUARIOS_PRUEBA:
+        if frappe.db.exists("User", correo):
+            frappe.delete_doc("User", correo, force=1, ignore_permissions=True, delete_permanently=True)
     frappe.db.commit()

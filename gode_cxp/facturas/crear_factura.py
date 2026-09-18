@@ -62,9 +62,12 @@ def crear_factura_desde_cfdi(cfdi_name):
 
     diferencia = abs(flt(pi.grand_total) - signo * flt(cfdi.total))
     if diferencia > TOLERANCIA:
-        pi.estado_revision = "Error de lectura"
-        pi.nota_aclaracion = _("El total del XML ({0}) no coincide con el total de la factura ({1}). Revisar impuestos y conceptos antes de aprobar.").format(cfdi.total, pi.grand_total)
-        pi.save(ignore_permissions=True)
+        # db_set y no save(): con el workflow activo, un guardado que cambia el estado sin una
+        # transición se rechaza. "Error de lectura" lo marca la app, no una acción de usuario.
+        pi.db_set({
+            "estado_revision": "Error de lectura",
+            "nota_aclaracion": _("El total del XML ({0}) no coincide con el total de la factura ({1}). Revisar impuestos y conceptos antes de aprobar.").format(cfdi.total, pi.grand_total),
+        })
 
     cfdi.db_set({"factura": pi.name, "estado": "Con factura", "proveedor": proveedor})
     return pi.name

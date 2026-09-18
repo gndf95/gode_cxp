@@ -1,0 +1,78 @@
+{
+ "charts": [],
+ "content": "[{\"id\":\"enc1\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Facturas</b></span>\",\"col\":12}},{\"id\":\"a1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Bandeja de CFDI\",\"col\":4}},{\"id\":\"a2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Facturas de compra\",\"col\":4}},{\"id\":\"a3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Proveedores\",\"col\":4}},{\"id\":\"enc2\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Deuda y configuración</b></span>\",\"col\":12}},{\"id\":\"a4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cuentas por pagar\",\"col\":4}},{\"id\":\"a5\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Antigüedad de saldos\",\"col\":4}},{\"id\":\"a6\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Configuración CxP\",\"col\":4}}]",
+ "creation": "2026-09-17 00:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "file",
+ "idx": 0,
+ "indicator_color": "blue",
+ "is_hidden": 0,
+ "label": "Cuentas por Pagar",
+ "links": [],
+ "modified": "2026-09-17 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Cuentas por Pagar",
+ "name": "Cuentas por Pagar",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [
+  {
+   "role": "CxP Revisor"
+  },
+  {
+   "role": "CxP Tesoreria"
+  },
+  {
+   "role": "CxP Contabilidad"
+  },
+  {
+   "role": "System Manager"
+  }
+ ],
+ "sequence_id": 1.6,
+ "shortcuts": [
+  {
+   "doc_view": "List",
+   "label": "Bandeja de CFDI",
+   "link_to": "CFDI Recibido",
+   "type": "DocType"
+  },
+  {
+   "doc_view": "List",
+   "label": "Facturas de compra",
+   "link_to": "Purchase Invoice",
+   "type": "DocType"
+  },
+  {
+   "doc_view": "List",
+   "label": "Proveedores",
+   "link_to": "Supplier",
+   "type": "DocType"
+  },
+  {
+   "label": "Cuentas por pagar",
+   "link_to": "Accounts Payable",
+   "report_ref_doctype": "Purchase Invoice",
+   "type": "Report"
+  },
+  {
+   "label": "Antigüedad de saldos",
+   "link_to": "Accounts Payable Summary",
+   "report_ref_doctype": "Purchase Invoice",
+   "type": "Report"
+  },
+  {
+   "label": "Configuración CxP",
+   "link_to": "Configuracion CxP",
+   "type": "DocType"
+  }
+ ],
+ "title": "Cuentas por Pagar"
+}

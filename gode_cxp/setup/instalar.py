@@ -2,6 +2,8 @@
 import frappe
 
 from gode_cxp.setup.campos import asegurar_campos
+from gode_cxp.setup.flujo import asegurar_flujo
+from gode_cxp.setup.roles import asegurar_perfil_modulos, asegurar_permisos
 
 ROLES = ("CxP Revisor", "CxP Tesoreria", "CxP Contabilidad")
 
@@ -22,5 +24,8 @@ def asegurar_configuracion():
     asegurar_roles()
     asegurar_grupo_proveedores()
     asegurar_campos()
+    asegurar_permisos()
+    asegurar_flujo()
+    asegurar_perfil_modulos()
     frappe.db.commit()
     frappe.clear_cache()

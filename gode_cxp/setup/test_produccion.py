@@ -287,15 +287,20 @@ class TestProduccion(FrappeTestCase):
             frappe.db.commit()
 
     def test_avisa_si_la_cuenta_a_mano_no_es_del_tipo_esperado(self):
-        """El aviso REVISAR sale siempre: en dry-run y también cuando ya no hay nada que cambiar."""
+        """El aviso REVISAR sale siempre: en dry-run y también cuando ya no hay nada que cambiar. Va
+        en `avisos` y NO en `acciones`, para que `acciones` quede vacía cuando no hay nada por hacer
+        (si no, la segunda corrida creería que sigue habiendo trabajo y haría commit sin cambios)."""
         olvidar_las_cuentas()
         gasto = una_cuenta(root_type="Expense")       # se pide como IVA acreditable, que es Asset
         a_mano = {"cuenta_iva_acreditable": gasto}
         r = configurar_empresa(EMPRESA, RFC, dry_run=True, cuentas=a_mano)
-        self.assertTrue([a for a in r["acciones"] if a.startswith("REVISAR:") and gasto in a], r["acciones"])
+        self.assertTrue([a for a in r["avisos"] if a.startswith("REVISAR:") and gasto in a], r["avisos"])
+        self.assertFalse([a for a in r["acciones"] if a.startswith("REVISAR:")], r["acciones"])
         configurar_empresa(EMPRESA, RFC, dry_run=False, cuentas=a_mano)
         r2 = configurar_empresa(EMPRESA, RFC, dry_run=False, cuentas=a_mano)
-        self.assertTrue([a for a in r2["acciones"] if a.startswith("REVISAR:")], r2["acciones"])
+        self.assertTrue([a for a in r2["avisos"] if a.startswith("REVISAR:")], r2["avisos"])
+        self.assertEqual(r2["acciones"], [])
+        self.assertIn("aviso", r2["resumen"])
         olvidar_las_cuentas()   # que la cuenta equivocada no sobreviva a la prueba
 
     def test_una_clave_desconocida_en_cuentas_no_pasa(self):

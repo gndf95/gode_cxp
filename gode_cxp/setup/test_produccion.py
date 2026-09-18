@@ -1,4 +1,6 @@
 """configurar_empresa: lo que dice que hará (dry-run) y que aplicarlo dos veces no cambia nada."""
+from unittest.mock import patch
+
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
@@ -26,14 +28,19 @@ def cuentas_por_pagar_validas():
 
 
 def olvidar_las_cuentas():
-    """Deja la Configuración CxP sin cuentas, borra las que crea el script y deja la cuenta por
-    pagar de la empresa apuntando a una que NO sirve, para poder recorrer el camino completo: el
-    que correrá en producción la primera vez."""
+    """Deja la Configuración CxP sin cuentas y la cuenta por pagar de la empresa apuntando a una que
+    NO sirve, para recorrer el camino de una empresa sin configurar.
+
+    Las cuentas que el script crea se borran si se puede: en cuanto una tiene asientos, ERPNext ya
+    no deja borrarla (y en el sitio de pruebas quedan asientos cancelados huérfanos de las facturas
+    que borra `limpiar()`). Cuando no se puede, el script las reusa, que es el otro camino bueno; el
+    de crearlas se prueba aparte con un nombre que nadie más usa."""
     for campo in CUENTAS:
         frappe.db.set_single_value("Configuracion CxP", campo, None)
     for receta in CUENTAS.values():
         nombre = frappe.db.get_value("Account", {"company": EMPRESA, "account_name": receta["nombre"]}, "name")
-        if nombre:
+        # Mismo criterio que Account.on_trash de ERPNext: cualquier GL Entry, cancelada o no.
+        if nombre and not frappe.db.exists("GL Entry", {"account": nombre}):
             frappe.delete_doc("Account", nombre, force=1, ignore_permissions=True)
     # set_value y no el doc: se quiere dejar a la empresa en el estado inválido a propósito.
     frappe.db.set_value("Company", EMPRESA, "default_payable_account", una_cuenta(root_type="Expense"))
@@ -67,7 +74,8 @@ class TestProduccion(FrappeTestCase):
         self.assertTrue(r["acciones"], "el dry-run debería tener algo que reportar")
         # El reporte lo lee una persona: son frases sueltas en español, no estructuras.
         self.assertTrue(all(isinstance(a, str) for a in r["acciones"]))
-        self.assertTrue(any(a.startswith("Crear la cuenta") for a in r["acciones"]), r["acciones"])
+        self.assertTrue([a for a in r["acciones"]
+                         if a.startswith("Crear la cuenta") or a.startswith("Reusar la cuenta")], r["acciones"])
         # El resumen va aparte: en `acciones` sólo hay cosas por hacer.
         self.assertNotIn(NADA_QUE_HACER, r["acciones"])
         self.assertIn("no se escribió nada", r["resumen"])
@@ -129,7 +137,32 @@ class TestProduccion(FrappeTestCase):
             frappe.db.set_value("Company", EMPRESA, "default_payable_account", antes)
             frappe.db.commit()
 
-    def test_las_cuentas_nuevas_quedan_del_tipo_correcto(self):
+    def test_crea_la_cuenta_que_falta_donde_corresponde(self):
+        """El camino de crearla, con un nombre que ninguna otra prueba usa: las cuentas normales
+        acaban con asientos y ya no se pueden borrar, así que el resto del tiempo se reusan."""
+        receta = dict(CUENTAS["cuenta_ieps"], nombre="IEPS de prueba borrable", alternas=())
+        with patch.dict(CUENTAS, {"cuenta_ieps": receta}):
+            frappe.db.set_single_value("Configuracion CxP", "cuenta_ieps", None)
+            frappe.db.commit()
+            r = configurar_empresa(EMPRESA, RFC, dry_run=True)
+            self.assertTrue([a for a in r["acciones"] if a.startswith(f"Crear la cuenta '{receta['nombre']}")],
+                            r["acciones"])
+            self.assertFalse(frappe.db.exists("Account", {"company": EMPRESA, "account_name": receta["nombre"]}))
+            configurar_empresa(EMPRESA, RFC, dry_run=False)
+            nombre = frappe.db.get_value("Account", {"company": EMPRESA, "account_name": receta["nombre"]}, "name")
+            self.assertTrue(nombre, "la cuenta debería haberse creado")
+            cuenta = frappe.get_doc("Account", nombre)
+            self.assertEqual(cuenta.root_type, receta["root_type"])
+            self.assertEqual(cuenta.account_type, receta["account_type"])
+            self.assertEqual(cuenta.is_group, 0)
+            self.assertTrue(cuenta.parent_account)
+            self.assertEqual(frappe.db.get_single_value("Configuracion CxP", "cuenta_ieps"), nombre)
+            # Recién creada no tiene asientos, así que sí se puede borrar y no ensucia el sitio.
+            frappe.db.set_single_value("Configuracion CxP", "cuenta_ieps", None)
+            frappe.delete_doc("Account", nombre, force=1, ignore_permissions=True)
+            frappe.db.commit()
+
+    def test_las_cuentas_configuradas_quedan_del_tipo_correcto(self):
         olvidar_las_cuentas()
         configurar_empresa(EMPRESA, RFC, dry_run=False)
         conf = frappe.get_doc("Configuracion CxP")

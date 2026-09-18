@@ -3,6 +3,7 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from gode_cxp.facturas import pruebas_comun
+from gode_cxp.setup.campos import CAMPOS
 from gode_cxp.setup.produccion import (BANCO_EMPRESA, NADA_QUE_HACER_PAGOS, NOMBRE_CUENTA_EMPRESA,
                                        configurar_pagos)
 
@@ -76,20 +77,27 @@ class TestProduccionPagos(FrappeTestCase):
 
     def test_las_secciones_nuevas_no_se_tragan_campos_estandar(self):
         """Un Section Break personalizado se lleva consigo todo lo que viene después en el meta hasta
-        el siguiente Section Break. Si entre la sección nueva y el siguiente corte queda un campo
-        ESTÁNDAR, ese campo hereda el `depends_on` (o el `collapsible`) de la sección nueva y
-        desaparece del formulario: `sec_tef` esconderia `branch_code` y `sec_lote` esconderia
-        `clearance_date`."""
-        for dt, seccion in (("Bank Account", "sec_tef"), ("Payment Entry", "sec_lote")):
-            campos = frappe.get_meta(dt).fields
-            desde = [f.fieldname for f in campos].index(seccion) + 1
-            dentro = []
-            for campo in campos[desde:]:
-                if campo.fieldtype == "Section Break":
-                    break
-                dentro.append(campo)
-            ajenos = [f.fieldname for f in dentro if not f.get("is_custom_field")]
-            self.assertEqual(ajenos, [], f"{dt}: la sección '{seccion}' se tragó {ajenos}")
+        el siguiente corte de layout. Si entre la sección nueva y ese corte queda un campo ESTÁNDAR,
+        ese campo hereda el `depends_on` (o el `collapsible`) de la sección nueva y desaparece del
+        formulario: así `sec_tef` y `sec_lote` esconderían `branch_code` y `clearance_date`.
+
+        Se revisan TODAS las secciones que agrega la app, no sólo las de pagos: el error es de la
+        forma de declarar los campos, no de un DocType en particular."""
+        # Lo que cierra una sección en el formulario: otra sección, una pestaña o un 'Fold'
+        # (frappe/model/__init__.py los lista juntos como campos de layout).
+        cortes = ("Section Break", "Tab Break", "Fold")
+        for dt, definiciones in CAMPOS.items():
+            for seccion in [c["fieldname"] for c in definiciones if c["fieldtype"] == "Section Break"]:
+                campos = frappe.get_meta(dt).fields
+                nombres = [f.fieldname for f in campos]
+                self.assertIn(seccion, nombres, f"{dt}: la sección '{seccion}' no está en el meta")
+                dentro = []
+                for campo in campos[nombres.index(seccion) + 1:]:
+                    if campo.fieldtype in cortes:
+                        break
+                    dentro.append(campo)
+                ajenos = [f.fieldname for f in dentro if not f.get("is_custom_field")]
+                self.assertEqual(ajenos, [], f"{dt}: la sección '{seccion}' se tragó {ajenos}")
 
     def test_dry_run_sin_cuenta_bancaria_promete_crear_banco_y_cuenta(self):
         """Con el sitio limpio de banco y cuenta bancaria, el dry-run tiene que prometer los dos
@@ -132,3 +140,26 @@ class TestProduccionPagos(FrappeTestCase):
         self.aplicar(dry_run=False)
         self.assertEqual(frappe.db.count("Bank Account", {"bank": BANCO_EMPRESA}), cuantas)
         self.assertEqual(frappe.db.get_single_value("Configuracion CxP", "cuenta_bancaria_empresa"), a_mano)
+        # Y con la cuenta ya configurada NO queda nada por hacer: "Reusar" no puede repetirse en cada
+        # corrida. En producción la cuenta que ya existe no se llamará 'Banamex GODE - Banamex', así
+        # que compararla sólo con el nombre esperado dejaría la función sin ser idempotente.
+        r2 = self.aplicar(dry_run=False)
+        self.assertEqual(r2["acciones"], [])
+        self.assertEqual(r2["resumen"], NADA_QUE_HACER_PAGOS)
+
+    def test_no_reusa_una_cuenta_bancaria_que_no_es_de_la_empresa(self):
+        """El último recurso para encontrar la cuenta de cargo (buscar por la cuenta contable) tiene
+        que exigir además `is_company_account` y la empresa: una cuenta bancaria de otro dueño ligada
+        a la misma cuenta contable no es la cuenta de cargo de GODE."""
+        self.addCleanup(self.dejar_todo_configurado)
+        borrar_la_cuenta_bancaria()
+        frappe.get_doc({"doctype": "Bank", "bank_name": BANCO_EMPRESA}).insert(ignore_permissions=True)
+        ajena = frappe.get_doc({"doctype": "Bank Account", "account_name": "Cuenta ajena",
+                                "bank": BANCO_EMPRESA, "is_company_account": 0,
+                                "account": self.banco_erp}).insert(ignore_permissions=True).name
+        self.addCleanup(borrar_la_cuenta_bancaria)   # LIFO: primero se borra la ajena, luego se reconfigura
+        r = self.aplicar(dry_run=True)
+        self.assertFalse([a for a in r["acciones"] if ajena in a], r["acciones"])
+        self.assertTrue([a for a in r["acciones"]
+                         if a.startswith(f"Crear la cuenta bancaria de la empresa '{CUENTA_ESPERADA}'")],
+                        r["acciones"])

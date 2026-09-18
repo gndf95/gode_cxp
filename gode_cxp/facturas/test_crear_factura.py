@@ -1,4 +1,5 @@
 import frappe
+from frappe.model.workflow import apply_workflow
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_days
 
@@ -65,7 +66,13 @@ class TestCrearFactura(FrappeTestCase):
 
     def test_nota_de_credito(self):
         original = frappe.get_doc("Purchase Invoice", crear_factura_desde_cfdi(procesar_xml(ejemplos.INGRESO_40, "SAT").name))
-        original.submit()
+        # Con el flujo de revisión activo la factura sólo se envía ya aprobada; Administrator tiene
+        # todos los roles, así que puede aplicar las tres transiciones.
+        original.db_set("recepcion_confirmada", 1)
+        for accion in ("Enviar a revisión", "Confirmar recepción", "Aprobar"):
+            apply_workflow(original, accion)
+            original.reload()
+        self.assertEqual((original.estado_revision, original.docstatus), ("Aprobada", 1))
         cfdi = procesar_xml(ejemplos.EGRESO_40, "SAT")
         nc = frappe.get_doc("Purchase Invoice", crear_factura_desde_cfdi(cfdi.name))
         self.assertEqual((nc.is_return, nc.return_against), (1, original.name))

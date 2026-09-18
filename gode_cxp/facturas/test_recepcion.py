@@ -59,6 +59,35 @@ class TestRecepcion(FrappeTestCase):
         with self.assertRaises(frappe.UniqueValidationError):
             copia.insert(ignore_permissions=True)
 
+    def test_sin_rfc_empresa_no_procesa(self):
+        frappe.db.set_single_value("Configuracion CxP", "rfc_empresa", "")
+        try:
+            with self.assertRaises(frappe.ValidationError):
+                procesar_xml(ejemplos.INGRESO_40, "Carga manual")
+        finally:
+            frappe.db.set_single_value("Configuracion CxP", "rfc_empresa", ejemplos.RFC_EMPRESA)
+
+    def test_pdf_se_adjunta(self):
+        doc = procesar_xml(ejemplos.INGRESO_40, "Correo", "A1234.xml", pdf_bytes=b"%PDF-1.4 x")
+        doc = frappe.get_doc("CFDI Recibido", doc.name)
+        self.assertTrue(doc.archivo_xml)
+        self.assertTrue(doc.archivo_pdf)
+        self.assertTrue(doc.archivo_pdf.endswith(".pdf"))
+        for url in (doc.archivo_xml, doc.archivo_pdf):
+            self.assertEqual(frappe.db.get_value("File", {"file_url": url}, "is_private"), 1)
+
+    def test_proveedor_por_rfc_existente(self):
+        grupo = frappe.db.get_value("Supplier Group", {}, "name")
+        proveedor = frappe.get_doc({
+            "doctype": "Supplier", "supplier_name": "PRUEBA AVICOLA", "supplier_group": grupo,
+            "tax_id": "AVI900101AB1",
+        }).insert(ignore_permissions=True)
+        try:
+            doc = procesar_xml(ejemplos.INGRESO_40, "Carga manual")
+            self.assertEqual(doc.proveedor, proveedor.name)
+        finally:
+            frappe.delete_doc("Supplier", proveedor.name, force=1, ignore_permissions=True)
+
     def test_campos_estandar_existen(self):
         for campo in ("tipo_persona", "nombre_pila", "apellido_paterno", "apellido_materno", "correo_avisos", "bloqueado_pagos", "motivo_bloqueo"):
             self.assertTrue(frappe.get_meta("Supplier").has_field(campo), campo)

@@ -76,3 +76,13 @@ class TestLectorCfdi(unittest.TestCase):
             d = leer_cfdi(xml)
             calculado = round(d["subtotal"] - d["descuento"] + d["iva_trasladado"] + d["ieps"] - d["iva_retenido"] - d["isr_retenido"], 2)
             self.assertAlmostEqual(calculado, d["total"], places=2)
+
+    def test_numero_mal_formado_es_invalido(self):
+        xml = ejemplos.INGRESO_40.replace(b'Total="1160.00"', b'Total="1,160.00"')
+        with self.assertRaises(CfdiInvalido):
+            leer_cfdi(xml)
+
+    def test_fecha_mal_formada_es_invalida(self):
+        xml = ejemplos.INGRESO_40.replace(b'Fecha="2026-09-10T10:15:00"', b'Fecha="2026-13-40T10:15:00"')
+        with self.assertRaises(CfdiInvalido):
+            leer_cfdi(xml)

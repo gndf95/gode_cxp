@@ -46,39 +46,43 @@ def leer_cfdi(xml_bytes):
     if emisor is None or receptor is None:
         raise CfdiInvalido("El CFDI no tiene Emisor o Receptor")
 
-    conceptos = [_leer_concepto(n, c) for n in raiz.findall("cfdi:Conceptos/cfdi:Concepto", c)]
-    totales = _totales_impuestos(raiz, c, conceptos)
+    try:
+        conceptos = [_leer_concepto(n, c) for n in raiz.findall("cfdi:Conceptos/cfdi:Concepto", c)]
+        totales = _totales_impuestos(raiz, c, conceptos)
 
-    relacionados = []
-    for bloque in raiz.findall("cfdi:CfdiRelacionados", c):
-        for rel in bloque.findall("cfdi:CfdiRelacionado", c):
-            relacionados.append({"tipo_relacion": bloque.get("TipoRelacion"), "uuid": (rel.get("UUID") or "").upper()})
+        relacionados = []
+        for bloque in raiz.findall("cfdi:CfdiRelacionados", c):
+            for rel in bloque.findall("cfdi:CfdiRelacionado", c):
+                relacionados.append({"tipo_relacion": bloque.get("TipoRelacion"), "uuid": (rel.get("UUID") or "").upper()})
 
-    return {
-        "version": raiz.get("Version"),
-        "uuid": timbre.get("UUID").upper(),
-        "tipo_comprobante": raiz.get("TipoDeComprobante"),
-        "serie": raiz.get("Serie") or "",
-        "folio": raiz.get("Folio") or "",
-        "fecha_emision": _fecha(raiz.get("Fecha")),
-        "fecha_timbrado": _fecha(timbre.get("FechaTimbrado")),
-        "rfc_emisor": (emisor.get("Rfc") or "").upper(),
-        "nombre_emisor": emisor.get("Nombre") or "",
-        "regimen_emisor": emisor.get("RegimenFiscal") or "",
-        "rfc_receptor": (receptor.get("Rfc") or "").upper(),
-        "nombre_receptor": receptor.get("Nombre") or "",
-        "uso_cfdi": receptor.get("UsoCFDI") or "",
-        "moneda": raiz.get("Moneda") or "MXN",
-        "tipo_cambio": _num(raiz.get("TipoCambio"), 1.0),
-        "subtotal": _num(raiz.get("SubTotal")),
-        "descuento": _num(raiz.get("Descuento")),
-        "total": _num(raiz.get("Total")),
-        "metodo_pago": raiz.get("MetodoPago") or "",
-        "forma_pago": raiz.get("FormaPago") or "",
-        "conceptos": conceptos,
-        "cfdi_relacionados": relacionados,
-        **totales,
-    }
+        datos = {
+            "version": raiz.get("Version"),
+            "uuid": timbre.get("UUID").upper(),
+            "tipo_comprobante": raiz.get("TipoDeComprobante"),
+            "serie": raiz.get("Serie") or "",
+            "folio": raiz.get("Folio") or "",
+            "fecha_emision": _fecha(raiz.get("Fecha")),
+            "fecha_timbrado": _fecha(timbre.get("FechaTimbrado")),
+            "rfc_emisor": (emisor.get("Rfc") or "").upper(),
+            "nombre_emisor": emisor.get("Nombre") or "",
+            "regimen_emisor": emisor.get("RegimenFiscal") or "",
+            "rfc_receptor": (receptor.get("Rfc") or "").upper(),
+            "nombre_receptor": receptor.get("Nombre") or "",
+            "uso_cfdi": receptor.get("UsoCFDI") or "",
+            "moneda": raiz.get("Moneda") or "MXN",
+            "tipo_cambio": _num(raiz.get("TipoCambio"), 1.0),
+            "subtotal": _num(raiz.get("SubTotal")),
+            "descuento": _num(raiz.get("Descuento")),
+            "total": _num(raiz.get("Total")),
+            "metodo_pago": raiz.get("MetodoPago") or "",
+            "forma_pago": raiz.get("FormaPago") or "",
+            "conceptos": conceptos,
+            "cfdi_relacionados": relacionados,
+            **totales,
+        }
+    except (ValueError, TypeError) as e:
+        raise CfdiInvalido(f"Valor numérico o fecha inválido en el CFDI: {e}")
+    return datos
 
 
 def _leer_concepto(nodo, c):

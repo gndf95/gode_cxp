@@ -7,10 +7,12 @@ from gode_cxp.cfdi.lector import leer_cfdi
 
 
 def rfc_empresa():
-    return (frappe.db.get_single_value("Configuracion CxP", "rfc_empresa") or "").upper()
+    return (frappe.db.get_single_value("Configuracion CxP", "rfc_empresa") or "").strip().upper()
 
 
 def procesar_xml(xml_bytes, origen, nombre_archivo="cfdi.xml", pdf_bytes=None):
+    if not rfc_empresa():
+        frappe.throw(_("Configura el RFC de la empresa en Configuración CxP antes de cargar CFDI."))
     try:
         datos = leer_cfdi(xml_bytes)
     except CfdiInvalido as e:
@@ -35,7 +37,8 @@ def procesar_xml(xml_bytes, origen, nombre_archivo="cfdi.xml", pdf_bytes=None):
     if not frappe.db.exists("Currency", doc.moneda):
         doc.moneda = "MXN"   # XXX (complementos de pago) no existe como moneda
     doc.estado = "Nuevo" if doc.rfc_receptor == rfc_empresa() else "Ajeno"
-    doc.proveedor = frappe.db.get_value("Supplier", {"tax_id": doc.rfc_emisor}, "name")
+    if doc.rfc_emisor:
+        doc.proveedor = frappe.db.get_value("Supplier", {"tax_id": doc.rfc_emisor}, "name")
     doc.insert(ignore_permissions=True)
 
     doc.archivo_xml = _adjuntar(doc, nombre_archivo, xml_bytes)

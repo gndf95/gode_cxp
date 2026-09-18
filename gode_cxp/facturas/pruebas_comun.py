@@ -21,6 +21,8 @@ def _cuenta(nombre, root_type, account_type=None):
 
 
 def preparar_sitio_pruebas():
+    if not frappe.db.exists("Company", EMPRESA):
+        frappe.throw(f"No existe la empresa '{EMPRESA}': preparar_sitio_pruebas() solo corre en el sitio de pruebas.")
     empresa = frappe.get_doc("Company", EMPRESA)
     empresa.default_payable_account = frappe.db.get_value("Account", {"company": EMPRESA, "account_type": "Payable", "is_group": 0}, "name")
     empresa.save(ignore_permissions=True)
@@ -43,6 +45,9 @@ def preparar_sitio_pruebas():
 
 
 def limpiar():
+    # Red de seguridad: limpiar() borra CFDI y facturas en bloque, nunca debe tocar producción.
+    if frappe.db.get_single_value("Configuracion CxP", "empresa") != EMPRESA:
+        frappe.throw(f"limpiar() solo corre en el sitio de pruebas (Configuración CxP.empresa = {EMPRESA})")
     for dt, filtros in (("Purchase Invoice", {"cfdi_uuid": ["!=", ""]}), ("CFDI Recibido", {})):
         for name in frappe.get_all(dt, filters=filtros, pluck="name"):
             doc = frappe.get_doc(dt, name)

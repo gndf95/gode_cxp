@@ -28,7 +28,7 @@ def crear_factura_desde_cfdi(cfdi_name):
     pi = frappe.new_doc("Purchase Invoice")
     pi.update({
         "company": conf.empresa, "supplier": proveedor, "currency": cfdi.moneda, "conversion_rate": flt(cfdi.tipo_cambio) or 1,
-        "set_posting_time": 1, "posting_date": fecha, "bill_no": f"{cfdi.serie or ''}{cfdi.folio or ''}" or cfdi.uuid[:8],
+        "set_posting_time": 1, "posting_date": fecha, "bill_no": _referencia(cfdi),
         "bill_date": fecha, "due_date": add_days(fecha, conf.dias_credito_default or 30),
         "cfdi_uuid": cfdi.uuid, "cfdi_recibido": cfdi.name, "rfc_emisor": cfdi.rfc_emisor,
         "metodo_pago_sat": cfdi.metodo_pago, "forma_pago_sat": cfdi.forma_pago, "estado_revision": "Recibida",
@@ -40,9 +40,19 @@ def crear_factura_desde_cfdi(cfdi_name):
     for c in cfdi.conceptos:
         cantidad = flt(c.cantidad) or 1
         neto = flt(c.importe) - flt(c.descuento)
+        descripcion = c.descripcion or ""
+        rate = round(neto / cantidad, 2)
+        if abs(rate * cantidad - neto) > 0.005:
+            # El precio unitario no cabe en 2 decimales: se factura 1 unidad por el importe neto
+            # y el detalle real del CFDI se guarda en la descripción.
+            qty = signo * 1
+            rate = round(neto, 2)
+            descripcion += " ({0:g} {1} × {2:.2f})".format(cantidad, c.unidad or c.clave_unidad, flt(c.valor_unitario))
+        else:
+            qty = signo * cantidad
         pi.append("items", {
-            "item_code": conf.item_generico, "item_name": (c.descripcion or "Concepto")[:140], "description": c.descripcion,
-            "qty": signo * cantidad, "rate": round(neto / cantidad, 6), "expense_account": cuenta_gasto or conf.cuenta_gasto_default,
+            "item_code": conf.item_generico, "item_name": (c.descripcion or "Concepto")[:140], "description": descripcion,
+            "qty": qty, "rate": rate, "expense_account": cuenta_gasto or conf.cuenta_gasto_default,
         })
     _agregar_impuesto(pi, "Add", conf.cuenta_iva_acreditable, "IVA acreditable", signo * flt(cfdi.iva_trasladado))
     _agregar_impuesto(pi, "Add", conf.cuenta_ieps, "IEPS", signo * flt(cfdi.ieps))
@@ -50,7 +60,7 @@ def crear_factura_desde_cfdi(cfdi_name):
     _agregar_impuesto(pi, "Deduct", conf.cuenta_ret_isr, "ISR retenido", signo * flt(cfdi.isr_retenido))
     pi.insert(ignore_permissions=True)
 
-    diferencia = abs(abs(flt(pi.grand_total)) - abs(flt(cfdi.total)))
+    diferencia = abs(flt(pi.grand_total) - signo * flt(cfdi.total))
     if diferencia > TOLERANCIA:
         pi.estado_revision = "Error de lectura"
         pi.nota_aclaracion = _("El total del XML ({0}) no coincide con el total de la factura ({1}). Revisar impuestos y conceptos antes de aprobar.").format(cfdi.total, pi.grand_total)
@@ -65,8 +75,19 @@ def _agregar_impuesto(pi, tipo, cuenta, descripcion, monto):
         return
     if not cuenta:
         frappe.throw(_("El CFDI trae {0} pero no hay cuenta configurada para ello en Configuración CxP.").format(descripcion))
+    # El signo ya viene del llamador (negativo en egresos): ERPNext espera montos negativos
+    # en una devolución tanto en las filas Add como en las Deduct.
     pi.append("taxes", {"charge_type": "Actual", "add_deduct_tax": tipo, "category": "Total", "account_head": cuenta,
-                        "description": descripcion, "tax_amount": abs(monto) if tipo == "Deduct" else monto})
+                        "description": descripcion, "tax_amount": monto})
+
+
+def _referencia(cfdi):
+    """Folio del proveedor: "serie-folio" si vienen los dos, si no lo que haya, y si no el UUID corto."""
+    serie = (cfdi.serie or "").strip()
+    folio = (cfdi.folio or "").strip()
+    if serie and folio:
+        return f"{serie}-{folio}"
+    return serie or folio or cfdi.uuid[:8]
 
 
 def _factura_relacionada(cfdi):
@@ -84,7 +105,10 @@ def _relacionados(cfdi):
     from gode_cxp.cfdi.lector import leer_cfdi
     if not cfdi.archivo_xml:
         return []
-    contenido = frappe.get_doc("File", {"file_url": cfdi.archivo_xml}).get_content()
+    archivo = frappe.db.get_value("File", {"file_url": cfdi.archivo_xml}, "name")
+    if not archivo:
+        return []
+    contenido = frappe.get_doc("File", archivo).get_content()
     if isinstance(contenido, str):
         contenido = contenido.encode("utf-8")
     return [r["uuid"] for r in leer_cfdi(contenido)["cfdi_relacionados"]]

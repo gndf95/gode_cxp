@@ -179,6 +179,16 @@ class TestFlujo(FrappeTestCase):
             self.assertIn(roles.EDITOR, {r.role for r in frappe.get_doc("User", correo).roles}, correo)
         self.assertNotIn(roles.EDITOR, {r.role for r in frappe.get_doc("User", CONTA).roles})
 
+    def test_asegurar_rol_editor_repara_a_los_usuarios_viejos(self):
+        """Camino de la migración: los usuarios que ya existían antes de esta versión no pasaron por
+        el hook de User, así que asegurar_rol_editor tiene que encontrarlos y ponerles el rol."""
+        filtro = {"parenttype": "User", "parent": REVISOR, "role": roles.EDITOR}
+        frappe.db.delete("Has Role", filtro)          # se salta el hook, como un usuario de antes
+        frappe.clear_cache(user=REVISOR)
+        self.assertFalse(frappe.db.exists("Has Role", filtro))
+        roles.asegurar_rol_editor()
+        self.assertTrue(frappe.db.exists("Has Role", filtro))
+
     # ------------------------------------------------------------------ amend
 
     def test_campos_de_revision_no_se_copian(self):

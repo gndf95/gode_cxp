@@ -69,7 +69,7 @@ class TestApi(FrappeTestCase):
         self.assertEqual(r["con_error"], [])           # ninguna factura quedó en "Error de lectura"
         # Frappe le da el mismo file_url a dos subidas con el mismo contenido (a.xml y a2.xml), así
         # que no basta con borrar la fila que se leyó: no debe quedar NINGUNA fila suelta del lote.
-        sueltos = frappe.get_all("File", filters={"file_url": ["in", urls], "attached_to_doctype": ["in", ["", None]]},
+        sueltos = frappe.get_all("File", filters={"file_url": ["in", urls], "attached_to_doctype": ["is", "not set"]},
                                  fields=["name", "file_name", "file_url"])
         self.assertEqual(sueltos, [], "los archivos temporales de la carga se borran")
 

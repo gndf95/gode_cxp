@@ -56,8 +56,10 @@ def _filtros_de_la_subida(url=None):
     """Lo único que esta API acepta y borra: un File privado, sin adjuntar y del usuario que llama.
     Sin el dueño, cualquier File público del sitio (File.has_permission deja leerlos a todos) pasaría
     por 'archivo que acabo de subir' y además se borraría al final."""
+    # "is"/"not set" y no ["in", ["", None]]: el campo vacío se guarda como NULL y un IN nunca
+    # empata con NULL, así que ese filtro no dejaba pasar ningún archivo.
     filtros = {"owner": frappe.session.user, "is_private": 1, "is_folder": 0,
-               "attached_to_doctype": ["in", ["", None]], "attached_to_name": ["in", ["", None]]}
+               "attached_to_doctype": ["is", "not set"], "attached_to_name": ["is", "not set"]}
     if url is not None:
         filtros["file_url"] = url
     return filtros

@@ -10,8 +10,13 @@ ESTADOS_REVISION = "\nRecibida\nEn revisión\nEn aclaración\nRevisada\nAprobada
 # de un amend), así que la enmienda la limpia además facturas/eventos.py.
 
 CAMPOS = {
+    # `sec_cxp` va después de `image` y no de `supplier_group`: un Section Break se lleva consigo
+    # todo lo que venga después en el meta hasta el siguiente corte, y en Supplier v15 el orden es
+    # supplier_group → supplier_type → is_transporter → image → defaults_section. Colgada de
+    # `supplier_group`, la sección se tragaba esos tres campos estándar de ERPNext (lo vigila
+    # test_produccion_pagos.test_las_secciones_nuevas_no_se_tragan_campos_estandar).
     "Supplier": [
-        {"fieldname": "sec_cxp", "label": "Cuentas por pagar", "fieldtype": "Section Break", "insert_after": "supplier_group"},
+        {"fieldname": "sec_cxp", "label": "Cuentas por pagar", "fieldtype": "Section Break", "insert_after": "image"},
         {"fieldname": "tipo_persona", "label": "Tipo de persona", "fieldtype": "Select", "options": "\nFísica\nMoral", "insert_after": "sec_cxp"},
         {"fieldname": "nombre_pila", "label": "Nombre(s) (persona física)", "fieldtype": "Data", "insert_after": "tipo_persona", "depends_on": "eval:doc.tipo_persona=='Física'"},
         {"fieldname": "apellido_paterno", "label": "Apellido paterno", "fieldtype": "Data", "insert_after": "nombre_pila", "depends_on": "eval:doc.tipo_persona=='Física'"},

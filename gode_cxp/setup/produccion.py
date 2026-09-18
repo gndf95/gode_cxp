@@ -179,7 +179,7 @@ def configurar_pagos(company, contrato, sucursal, cuenta, nombre_tef, concepto, 
     de ella se cuelga el `Bank Account` "Banamex GODE - Banamex", que es la cuenta bancaria con la
     que ERPNext registra los pagos.
     """
-    # TODO lo que se valida va ANTES del primer insert: si algo falta, esta función no puede dejar a
+    # Todo lo que se valida va ANTES del primer insert: si algo falta, esta función no puede dejar a
     # medias un banco recién creado y luego fallar (el dry-run prometería cosas distintas que la
     # corrida de verdad, y en producción habría que limpiar a mano).
     _validar_datos_tef(contrato, sucursal, cuenta, nombre_tef, concepto)
@@ -204,7 +204,7 @@ def configurar_pagos(company, contrato, sucursal, cuenta, nombre_tef, concepto, 
     if cta.account_type != "Bank":
         avisos.append(f"REVISAR: la cuenta contable '{cuenta_banco_erp}' no es de tipo Bank")
     nombre_cuenta = _cuenta_bancaria_de_la_empresa(company, cuenta_banco_erp, sucursal, cuenta,
-                                                   acciones, avisos, dry_run)
+                                                   conf.cuenta_bancaria_empresa, acciones, avisos, dry_run)
 
     deseado = {"contrato_banamex": contrato, "cuenta_cargo_sucursal": sucursal, "cuenta_cargo_numero": cuenta,
                "nombre_empresa_tef": nombre_tef, "concepto_tef": concepto,
@@ -225,22 +225,29 @@ def configurar_pagos(company, contrato, sucursal, cuenta, nombre_tef, concepto, 
             "resumen": _resumen(acciones, avisos, dry_run, NADA_QUE_HACER_PAGOS)}
 
 
-def _cuenta_bancaria_de_la_empresa(company, cuenta_banco_erp, sucursal, cuenta, acciones, avisos, dry_run):
+def _cuenta_bancaria_de_la_empresa(company, cuenta_banco_erp, sucursal, cuenta, configurada,
+                                   acciones, avisos, dry_run):
     """El `Bank Account` de la empresa con el que ERPNext registra los pagos. Devuelve su nombre.
 
     ERPNext NO deja dos `Bank Account` de empresa sobre la misma cuenta contable
     (erpnext/accounts/doctype/bank_account/bank_account.py::validate_account), así que si el sitio
-    ya trae una cuenta de empresa de Banamex, o cualquiera ligada a `cuenta_banco_erp`, se reusa: es
-    lo que va a pasar en producción, donde la cuenta bancaria suele estar dada de alta de antes.
+    ya trae una cuenta de empresa de Banamex, o cualquiera de la empresa ligada a `cuenta_banco_erp`,
+    se reusa: es lo que va a pasar en producción, donde la cuenta bancaria suele estar dada de alta
+    de antes.
+
+    `configurada` es lo que hoy dice `Configuracion CxP.cuenta_bancaria_empresa`. Se recibe para no
+    volver a anunciar "Reusar la cuenta X" en cada corrida: si la configuración ya apunta a esa
+    cuenta no hay nada por hacer, y en producción la cuenta existente no se llamará como `esperada`.
     """
     # El nombre lo arma ERPNext con account_name + " - " + bank (autoname).
     esperada = f"{NOMBRE_CUENTA_EMPRESA} - {BANCO_EMPRESA}"
     existente = (esperada if frappe.db.exists("Bank Account", esperada) else None) \
         or frappe.db.get_value("Bank Account", {"company": company, "bank": BANCO_EMPRESA,
                                                 "is_company_account": 1}, "name", order_by="creation") \
-        or frappe.db.get_value("Bank Account", {"account": cuenta_banco_erp}, "name", order_by="creation")
+        or frappe.db.get_value("Bank Account", {"account": cuenta_banco_erp, "company": company,
+                                                "is_company_account": 1}, "name", order_by="creation")
     if existente:
-        if existente != esperada:
+        if existente not in (esperada, configurada):
             acciones.append(f"Reusar la cuenta bancaria '{existente}' como cuenta de cargo de la empresa "
                             f"(ya existe; ERPNext no admite dos ligadas a la misma cuenta contable)")
         ligada = frappe.db.get_value("Bank Account", existente, "account")

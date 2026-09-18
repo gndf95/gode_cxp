@@ -1,6 +1,7 @@
 """Carga manual desde la bandeja: XML sueltos, ZIP con pares XML/PDF y el botón de crear factura."""
 import io
 import zipfile
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -135,6 +136,29 @@ class TestApi(FrappeTestCase):
         self.assertEqual(r["nuevos"], [])
         self.assertEqual(len(r["errores"]), 1)
         self.assertIn("bomba.zip", r["errores"][0]["archivo"])
+
+    def test_el_zip_de_un_mes_entero_cabe(self):
+        """El ZIP que manda la contadora con un mes entero trae del orden de 900 entradas (unos 450
+        XML con su PDF). No debe toparse: el tope está para el 'zip bomb', no para el uso normal."""
+        contenido = zip_con([(f"mes/relleno{i}.txt", b"x") for i in range(900)]
+                            + [("mes/buena.xml", ejemplos.INGRESO_40)])
+        r = procesar_archivos([subir("mes.zip", contenido)])
+        self.assertEqual(r["errores"], [])
+        self.assertEqual(len(r["nuevos"]), 1)
+
+    def test_un_lote_grande_se_confirma_por_partes(self):
+        """Un lote grande no puede ir entero en una sola transacción: si el request se cae a media
+        carga se perdería todo lo procesado. Con los topes bajados a 1 basta un lote de dos para
+        ver que lo de antes ya está confirmado y sobrevive a un rollback."""
+        with patch.object(api, "LOTE_GRANDE", 1), patch.object(api, "CONFIRMAR_CADA", 1):
+            r = procesar_archivos([subir("uno.xml", ejemplos.INGRESO_40),
+                                   subir("dos.xml", ejemplos.INGRESO_33_RETENCIONES)])
+        self.assertEqual(len(r["nuevos"]), 2)
+        frappe.db.rollback()          # como si el request se muriera justo al terminar
+        self.assertTrue(frappe.db.exists("CFDI Recibido", r["nuevos"][0]),
+                        "el primero ya estaba confirmado y tiene que seguir ahí")
+        self.assertFalse(frappe.db.exists("CFDI Recibido", r["nuevos"][1]),
+                         "el último todavía no se había confirmado")
 
     def test_el_zip_no_aplana_las_carpetas(self):
         """Dos CFDI distintos con el mismo nombre en carpetas distintas son dos archivos, y el PDF de

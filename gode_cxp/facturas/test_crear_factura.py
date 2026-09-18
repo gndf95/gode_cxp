@@ -88,6 +88,40 @@ class TestCrearFactura(FrappeTestCase):
         self.assertAlmostEqual(pi.grand_total, 1160.0, places=2)
         self.assertEqual(pi.estado_revision, "Recibida")
 
+    def test_cantidad_con_decimales(self):
+        """Un CFDI puede traer 10.26 kg: la cantidad con fracción entra tal cual en la factura.
+        La unidad del artículo genérico no puede exigir números enteros (ERPNext rechazaría la
+        factura); de eso se encarga setup/produccion.configurar_empresa."""
+        cfdi = procesar_xml(ejemplos.CANTIDAD_CON_DECIMALES_40, "SAT")
+        pi = frappe.get_doc("Purchase Invoice", crear_factura_desde_cfdi(cfdi.name))
+        self.assertEqual(len(pi.items), 1)
+        self.assertEqual((pi.items[0].qty, pi.items[0].rate), (10.26, 100))
+        self.assertAlmostEqual(pi.grand_total, 1190.16, places=2)
+        self.assertEqual(pi.estado_revision, "Recibida")
+
+    def test_sin_redondeo_por_factura(self):
+        """Con el redondeo global activo, ERPNext dejaría la factura en 1190.00 y mandaría los 16
+        centavos a una cuenta de ajuste: el total tiene que quedar clavado al del XML."""
+        antes = frappe.db.get_single_value("Global Defaults", "disable_rounded_total")
+        frappe.db.set_single_value("Global Defaults", "disable_rounded_total", 0)
+        frappe.db.commit()
+        try:
+            self.assertEqual(frappe.db.get_single_value("Global Defaults", "disable_rounded_total"), 0)
+            pi = frappe.get_doc("Purchase Invoice",
+                                crear_factura_desde_cfdi(procesar_xml(ejemplos.CANTIDAD_CON_DECIMALES_40, "SAT").name))
+            self.assertEqual(pi.disable_rounded_total, 1)
+            self.assertEqual(pi.rounded_total, 0)
+            self.assertAlmostEqual(pi.grand_total, 1190.16, places=2)
+            # La nota de crédito sale del mismo camino y también tiene que quedar sin redondear.
+            nc = frappe.get_doc("Purchase Invoice",
+                                crear_factura_desde_cfdi(procesar_xml(ejemplos.EGRESO_RETENCIONES_40, "SAT").name))
+            self.assertEqual(nc.disable_rounded_total, 1)
+            self.assertEqual(nc.rounded_total, 0)
+            self.assertAlmostEqual(nc.grand_total, -190.67, places=2)
+        finally:
+            frappe.db.set_single_value("Global Defaults", "disable_rounded_total", antes)
+            frappe.db.commit()
+
     def test_nota_de_credito_con_retenciones(self):
         cfdi = procesar_xml(ejemplos.EGRESO_RETENCIONES_40, "SAT")
         nc = frappe.get_doc("Purchase Invoice", crear_factura_desde_cfdi(cfdi.name))

@@ -223,6 +223,28 @@ class TestProduccion(FrappeTestCase):
             if receta["account_type"] and cuenta.account_name == receta["nombre"]:
                 self.assertEqual(cuenta.account_type, receta["account_type"], campo)
 
+    def test_la_unidad_del_articulo_permite_decimales(self):
+        """Los CFDI traen cantidades con fracción (10.26 kg). Si la unidad del artículo genérico
+        está marcada como 'debe ser número entero' -- 'Nos' lo viene de fábrica en ERPNext --, la
+        factura se rechaza; configurar_empresa tiene que quitarle esa marca."""
+        uom = frappe.db.get_value("Item", ITEM_GENERICO, "stock_uom")
+        self.assertTrue(uom, "el artículo genérico debería existir en el sitio de pruebas")
+        frappe.db.set_value("UOM", uom, "must_be_whole_number", 1)
+        frappe.db.commit()
+        try:
+            r = configurar_empresa(EMPRESA, RFC, dry_run=True)
+            self.assertTrue([a for a in r["acciones"] if a.startswith(f"Permitir decimales en la unidad '{uom}'")],
+                            r["acciones"])
+            self.assertEqual(frappe.db.get_value("UOM", uom, "must_be_whole_number"), 1)   # el dry-run no tocó nada
+            configurar_empresa(EMPRESA, RFC, dry_run=False)
+            self.assertEqual(frappe.db.get_value("UOM", uom, "must_be_whole_number"), 0)
+            # Y ya sin la marca, no hay nada más que reportar sobre la unidad.
+            r2 = configurar_empresa(EMPRESA, RFC, dry_run=True)
+            self.assertFalse([a for a in r2["acciones"] if a.startswith("Permitir decimales")], r2["acciones"])
+        finally:
+            frappe.db.set_value("UOM", uom, "must_be_whole_number", 0)
+            frappe.db.commit()
+
     def test_se_puede_decir_a_mano_que_cuenta_usar(self):
         """En producción puede convenir apuntar a una cuenta que ya existe en vez de crear otra."""
         olvidar_las_cuentas()

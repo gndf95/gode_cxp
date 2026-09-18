@@ -120,3 +120,16 @@ EGRESO_RETENCIONES_40 = b"""<?xml version="1.0" encoding="UTF-8"?>
 CANTIDAD_NO_EXACTA_40 = INGRESO_40.replace(b'Cantidad="10"', b'Cantidad="30"').replace(
     b'ValorUnitario="100.00"', b'ValorUnitario="33.333333"').replace(
     b'UUID="6f2c3d48-1234-4a5b-9c8d-abcdef012345"', b'UUID="CCCCCCCC-1111-4222-8333-DDDDDDDDDDDD"')
+
+# Cantidad con fracción (10.26 kg a 100.00) que sí divide exacto: la factura tiene que llevar
+# qty = 10.26, así que la unidad del artículo no puede exigir números enteros. Además el total
+# (1190.16) trae centavos, que es lo que ERPNext redondearía si no se le apaga el redondeo.
+CANTIDAD_CON_DECIMALES_40 = INGRESO_40.replace(b'Cantidad="10"', b'Cantidad="10.26"').replace(
+    b'SubTotal="1000.00"', b'SubTotal="1026.00"').replace(
+    b'Total="1160.00"', b'Total="1190.16"').replace(
+    b'Importe="1000.00"', b'Importe="1026.00"').replace(
+    b'Base="1000.00"', b'Base="1026.00"').replace(
+    b'Importe="160.00"', b'Importe="164.16"').replace(
+    b'TotalImpuestosTrasladados="160.00"', b'TotalImpuestosTrasladados="164.16"').replace(
+    b'Folio="1234"', b'Folio="1400"').replace(
+    b'UUID="6f2c3d48-1234-4a5b-9c8d-abcdef012345"', b'UUID="EEEEEEEE-1111-4222-8333-FFFFFFFFFFFF"')

@@ -66,4 +66,10 @@ def limpiar():
     for correo in USUARIOS_PRUEBA:
         if frappe.db.exists("User", correo):
             frappe.delete_doc("User", correo, force=1, ignore_permissions=True, delete_permanently=True)
+    # Las pruebas de la bandeja suben XML, ZIP y PDF sueltos (File sin adjuntar). Los que la carga
+    # no borra (un archivo ajeno, uno que falló) se quedarían acumulándose en el sitio de pruebas.
+    for name in frappe.get_all("File", filters={"attached_to_doctype": ["in", ["", None]], "is_folder": 0},
+                               or_filters=[["file_name", "like", "%.xml"], ["file_name", "like", "%.zip"], ["file_name", "like", "%.pdf"]],
+                               pluck="name"):
+        frappe.delete_doc("File", name, force=1, ignore_permissions=True, delete_permanently=True)
     frappe.db.commit()

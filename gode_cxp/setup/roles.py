@@ -99,7 +99,12 @@ def asegurar_rol_editor():
             continue    # frappe.get_roles("Administrator") ya devuelve todos los roles
         if frappe.db.exists("Has Role", {"parenttype": "User", "parent": correo, "role": EDITOR}):
             continue
-        frappe.get_doc("User", correo).add_roles(EDITOR)
+        try:
+            frappe.get_doc("User", correo).add_roles(EDITOR)
+        except Exception:
+            # add_roles guarda el User entero: si ese usuario no valida por cualquier otra razón
+            # (un campo obligatorio vacío de antes), no debe tumbar la migración de toda la app.
+            frappe.log_error(title=f"CxP: no se pudo dar {EDITOR} a {correo}")
 
 
 def asegurar_perfil_modulos():

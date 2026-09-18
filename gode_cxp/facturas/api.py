@@ -1,6 +1,5 @@
 """Puntos de entrada desde la interfaz: subir XML/ZIP y crear la factura de un CFDI."""
 import io
-import os
 import posixpath
 import zipfile
 
@@ -23,6 +22,7 @@ def procesar_archivos(file_urls, origen="Carga manual"):
     """Lee los XML (sueltos o dentro de ZIP) que el usuario acaba de subir y devuelve el resumen.
     Un archivo con problemas no detiene a los demás: se anota en 'errores' y se sigue."""
     frappe.has_permission("CFDI Recibido", "create", throw=True)
+    frappe.has_permission("Purchase Invoice", "create", throw=True)
     if origen not in ORIGENES:
         frappe.throw(_("Origen no válido: {0}").format(origen))
     if isinstance(file_urls, str):
@@ -30,8 +30,8 @@ def procesar_archivos(file_urls, origen="Carga manual"):
     if not isinstance(file_urls, (list, tuple)):
         frappe.throw(_("Se esperaba una lista de archivos."))
 
-    resultado = {"nuevos": [], "duplicados": [], "ajenos": [], "errores": [], "facturas": []}
-    temporales = []
+    resultado = {"nuevos": [], "duplicados": [], "ajenos": [], "errores": [], "facturas": [], "con_error": []}
+    temporales, indice = [], 0
     for url in file_urls:
         try:
             archivo = _archivo_del_sitio(url)
@@ -45,10 +45,35 @@ def procesar_archivos(file_urls, origen="Carga manual"):
         except Exception as e:
             _anotar_error(resultado, nombre, e)
             partes = []
-        for xml_nombre, xml_bytes, pdf_bytes in partes:
-            _procesar_uno(xml_nombre, xml_bytes, pdf_bytes, origen, resultado)
+        for etiqueta, xml_nombre, xml_bytes, pdf_bytes in partes:
+            _procesar_uno(indice, etiqueta, xml_nombre, xml_bytes, pdf_bytes, origen, resultado)
+            indice += 1
     _borrar_temporales(temporales)
     return resultado
+
+
+def _filtros_de_la_subida(url=None):
+    """Lo único que esta API acepta y borra: un File privado, sin adjuntar y del usuario que llama.
+    Sin el dueño, cualquier File público del sitio (File.has_permission deja leerlos a todos) pasaría
+    por 'archivo que acabo de subir' y además se borraría al final."""
+    filtros = {"owner": frappe.session.user, "is_private": 1, "is_folder": 0,
+               "attached_to_doctype": ["in", ["", None]], "attached_to_name": ["in", ["", None]]}
+    if url is not None:
+        filtros["file_url"] = url
+    return filtros
+
+
+def _archivo_del_sitio(url):
+    """Sólo archivos que el propio usuario acaba de subir: se busca el File por file_url y nunca se
+    abre una ruta suelta del servidor."""
+    if not isinstance(url, str) or ".." in url or not url.startswith(CARPETAS_DEL_SITIO):
+        frappe.throw(_("Ruta de archivo no permitida: {0}").format(url))
+    name = frappe.db.get_value("File", _filtros_de_la_subida(url), "name")
+    if not name:
+        frappe.throw(_("Solo se pueden procesar archivos que tú acabas de subir: {0}").format(url))
+    archivo = frappe.get_doc("File", name)
+    archivo.check_permission("read")
+    return archivo
 
 
 def _borrar_temporales(urls):
@@ -57,23 +82,10 @@ def _borrar_temporales(urls):
     Frappe le da el MISMO file_url a dos subidas con el mismo contenido
     (File.validate_duplicate_entry): borrando dentro del bucle, el segundo archivo del lote se
     quedaría sin nada que leer, y borrando sólo la fila que se leyó quedaría la otra huérfana.
-    Lo que esté adjunto a algo no se toca."""
+    Se borra con los mismos filtros con que se aceptó: nada que sea de otro o esté adjunto a algo."""
     for url in sorted(set(urls)):
-        for name in frappe.get_all("File", filters={"file_url": url, "attached_to_doctype": ["in", ["", None]]}, pluck="name"):
+        for name in frappe.get_all("File", filters=_filtros_de_la_subida(url), pluck="name"):
             frappe.delete_doc("File", name, ignore_permissions=True, force=1)
-
-
-def _archivo_del_sitio(url):
-    """Sólo archivos que ya están en el sitio: se busca el File por file_url y nunca se abre una
-    ruta suelta del servidor. Además se comprueba que el usuario pueda leer ese File."""
-    if not isinstance(url, str) or ".." in url or not url.startswith(CARPETAS_DEL_SITIO):
-        frappe.throw(_("Ruta de archivo no permitida: {0}").format(url))
-    name = frappe.db.get_value("File", {"file_url": url}, "name")
-    if not name:
-        frappe.throw(_("El archivo {0} no está registrado en el sitio.").format(url))
-    archivo = frappe.get_doc("File", name)
-    archivo.check_permission("read")
-    return archivo
 
 
 def _a_bytes(contenido):
@@ -82,18 +94,24 @@ def _a_bytes(contenido):
 
 
 def _desempacar(nombre, contenido):
-    """Devuelve [(nombre_xml, bytes_xml, bytes_pdf_o_None)]. Un ZIP puede traer pares XML/PDF por
-    nombre base (F77.xml + F77.pdf); lo que no sea .xml o .pdf se ignora."""
+    """Devuelve [(etiqueta, nombre_xml, bytes_xml, bytes_pdf_o_None)]. La etiqueta es la ruta dentro
+    del ZIP (para el resumen de errores) y el nombre es el del archivo (el File se llama así).
+    El PDF se empareja por carpeta + nombre sin extensión: 'A/F1.pdf' es el de 'A/F1.xml' y no el de
+    'B/F1.xml'; dos carpetas pueden traer archivos con el mismo nombre y son dos CFDI distintos."""
     if not nombre.lower().endswith(".zip"):
-        return [(nombre, contenido, None)]
+        return [(nombre, nombre, contenido, None)]
     miembros = _leer_zip(contenido)
-    pdfs = {os.path.splitext(n)[0].lower(): b for n, b in miembros.items() if n.lower().endswith(".pdf")}
-    return [(n, b, pdfs.get(os.path.splitext(n)[0].lower()))
-            for n, b in miembros.items() if n.lower().endswith(".xml")]
+    pdfs = {_clave_de_pareja(r): b for r, b in miembros.items() if r.lower().endswith(".pdf")}
+    return [(r, posixpath.basename(r), b, pdfs.get(_clave_de_pareja(r)))
+            for r, b in miembros.items() if r.lower().endswith(".xml")]
+
+
+def _clave_de_pareja(ruta):
+    return posixpath.splitext(ruta)[0].lower()
 
 
 def _leer_zip(contenido):
-    """{nombre_base: bytes} de los .xml y .pdf del ZIP, con topes contra el 'zip bomb'."""
+    """{ruta_dentro_del_zip: bytes} de los .xml y .pdf del ZIP, con topes contra el 'zip bomb'."""
     miembros, leidos = {}, 0
     with zipfile.ZipFile(io.BytesIO(contenido)) as z:
         entradas = [i for i in z.infolist() if not i.is_dir()]
@@ -102,7 +120,8 @@ def _leer_zip(contenido):
         if sum(i.file_size for i in entradas) > MAX_BYTES_ZIP:
             frappe.throw(_("El ZIP dice ocupar más de {0} MB descomprimido.").format(MAX_BYTES_ZIP // 1048576))
         for info in entradas:
-            if not _ruta_segura(info.filename) or not info.filename.lower().endswith((".xml", ".pdf")):
+            ruta = _ruta_segura(info.filename)
+            if not ruta or not ruta.lower().endswith((".xml", ".pdf")):
                 continue
             with z.open(info) as f:
                 # Un byte de más para cazar al ZIP que miente sobre el tamaño de sus archivos.
@@ -112,22 +131,29 @@ def _leer_zip(contenido):
             leidos += len(datos)
             if leidos > MAX_BYTES_ZIP:
                 frappe.throw(_("El ZIP pasa de {0} MB descomprimido.").format(MAX_BYTES_ZIP // 1048576))
-            miembros[posixpath.basename(info.filename)] = datos
+            miembros[ruta] = datos
     return miembros
 
 
 def _ruta_segura(ruta):
-    """Se ignoran los miembros con ruta absoluta o con '..': aunque sólo se use el nombre base,
-    un ZIP así viene mal intencionado y no hay por qué leerlo."""
-    partes = ruta.replace("\\", "/").split("/")
-    return not ruta.startswith("/") and ".." not in partes and bool(partes[-1])
+    """Devuelve la ruta relativa del miembro, o None si el ZIP viene mal intencionado: ruta absoluta
+    o con '..'. No se aplana: la carpeta forma parte de la identidad del archivo."""
+    partes = [p for p in ruta.replace("\\", "/").split("/") if p not in ("", ".")]
+    if ruta.startswith("/") or ".." in partes or not partes:
+        return None
+    return "/".join(partes)
 
 
-def _procesar_uno(nombre, xml_bytes, pdf_bytes, origen, resultado):
+def _procesar_uno(indice, etiqueta, nombre, xml_bytes, pdf_bytes, origen, resultado):
+    """Cada archivo del lote va en su propio punto de retorno: si revienta a media faena, se deshace
+    lo que dejó a medias y el lote sigue con el siguiente."""
+    punto = f"cxp_{indice}"
+    frappe.db.savepoint(punto)
     try:
         cfdi = procesar_xml(xml_bytes, origen, nombre, pdf_bytes)
     except Exception as e:
-        _anotar_error(resultado, nombre, e)
+        frappe.db.rollback(save_point=punto)
+        _anotar_error(resultado, etiqueta, e)
         return
     if cfdi.flags.duplicado:
         resultado["duplicados"].append(cfdi.name)
@@ -136,12 +162,24 @@ def _procesar_uno(nombre, xml_bytes, pdf_bytes, origen, resultado):
     if cfdi.estado == "Ajeno":
         resultado["ajenos"].append(cfdi.name)
         return
-    if cfdi.tipo_comprobante in ("I", "E"):
-        try:
-            resultado["facturas"].append(crear_factura_desde_cfdi(cfdi.name))
-        except Exception as e:      # el CFDI queda registrado; la factura se reintenta desde la bandeja
-            cfdi.db_set({"estado": "Error", "error": str(e)[:1000]})
-            _anotar_error(resultado, nombre, e)
+    if cfdi.tipo_comprobante not in ("I", "E"):
+        return
+
+    # Segundo punto de retorno: si la factura falla después de insertarse, se deshace la factura a
+    # medio hacer pero el CFDI se queda registrado en estado "Error" para reintentarlo desde la bandeja.
+    punto_factura = f"{punto}_factura"
+    frappe.db.savepoint(punto_factura)
+    try:
+        factura = crear_factura_desde_cfdi(cfdi.name)
+    except Exception as e:
+        frappe.db.rollback(save_point=punto_factura)
+        cfdi.db_set({"estado": "Error", "error": str(e)[:1000]})
+        _anotar_error(resultado, etiqueta, e)
+        return
+    resultado["facturas"].append(factura)
+    if frappe.db.get_value("Purchase Invoice", factura, "estado_revision") == "Error de lectura":
+        # La factura se creó pero su total no cuadra con el del XML: hay que revisarla a mano.
+        resultado["con_error"].append(factura)
 
 
 def _anotar_error(resultado, archivo, error):

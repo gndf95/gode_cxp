@@ -1,8 +1,10 @@
 // CFDI Recibido: crear la factura de compra a mano (o reintentarla) y saltar a la que ya existe.
 frappe.ui.form.on("CFDI Recibido", {
 	refresh(frm) {
+		// Si ya hay factura no se ofrece crearla otra vez: para eso está "Ver factura".
 		if (
 			!frm.is_new() &&
+			!frm.doc.factura &&
 			["Nuevo", "Error"].includes(frm.doc.estado) &&
 			["I", "E"].includes(frm.doc.tipo_comprobante)
 		) {
@@ -12,10 +14,10 @@ frappe.ui.form.on("CFDI Recibido", {
 					args: { cfdi: frm.doc.name },
 					freeze: true,
 					freeze_message: __("Creando la factura…"),
-					callback: (r) => {
-						if (r.message) {
-							frappe.set_route("Form", "Purchase Invoice", r.message);
-						}
+					callback: () => {
+						// Recargar en vez de saltar a la factura: el usuario ve el CFDI ya en "Con
+						// factura" y decide si abrirla con "Ver factura".
+						frm.reload_doc();
 					},
 				});
 			}).addClass("btn-primary");

@@ -27,6 +27,9 @@ function cxp_subir_cfdi(listview) {
 		upload_notes: __("XML de CFDI, o ZIP con el XML y el PDF del mismo nombre"),
 		allow_multiple: true,
 		make_attachments_public: false,
+		// Sólo archivos del equipo: el explorador dejaría escoger cualquier File ya subido al sitio,
+		// y la carga sólo procesa lo que uno acaba de subir.
+		disable_file_browser: true,
 		restrictions: { allowed_file_types: [".xml", ".zip"] },
 		on_success: (archivo) => {
 			if (archivo && archivo.file_url) {
@@ -53,6 +56,7 @@ function cxp_procesar_carga(listview, file_urls) {
 			if (!d) {
 				return;
 			}
+			const con_error = d.con_error || [];
 			let mensaje = __("Nuevos: {0} · Duplicados: {1} · Ajenos: {2} · Facturas creadas: {3} · Errores: {4}", [
 				d.nuevos.length,
 				d.duplicados.length,
@@ -60,6 +64,15 @@ function cxp_procesar_carga(listview, file_urls) {
 				d.facturas.length,
 				d.errores.length,
 			]);
+			if (con_error.length) {
+				// Facturas creadas cuyo total no cuadra con el del XML: quedan en "Error de lectura".
+				mensaje +=
+					"<br><br>" +
+					__("Facturas por revisar a mano ({0}): {1}", [
+						con_error.length,
+						con_error.map((n) => frappe.utils.escape_html(n)).join(", "),
+					]);
+			}
 			if (d.errores.length) {
 				// escape_html: el nombre del archivo lo pone quien sube, no se inyecta tal cual.
 				mensaje +=

@@ -10,8 +10,11 @@ REV, TES, CONTA = "CxP Revisor", "CxP Tesoreria", "CxP Contabilidad"
 # los roles allow_edit del estado (frappe/public/js/frappe/model/workflow.js::is_read_only). Con un
 # rol distinto por estado, Tesorería no podría escribir la nota de rechazo en "En revisión". Por eso
 # todos los estados usan este rol y aquí se garantiza que lo tenga quien puede escribir la factura.
+# "System Manager" va en la lista porque un administrador humano que no sea el usuario
+# "Administrator" no hereda los demás roles (frappe.get_roles("Administrator") sí los devuelve
+# todos): sin CxP Editor abriría la factura en solo lectura y no podría corregirla a mano.
 EDITOR = "CxP Editor"
-ROLES_QUE_ESCRIBEN = (REV, TES)
+ROLES_QUE_ESCRIBEN = (REV, TES, "System Manager")
 
 PTYPES = ("read", "write", "create", "delete", "submit", "cancel", "amend", "print", "email", "report", "export", "share", "import", "select")
 
@@ -92,6 +95,8 @@ def asegurar_rol_editor():
     """Lo mismo que sellar_rol_editor, para los usuarios que ya existían antes de esta versión."""
     correos = frappe.get_all("Has Role", filters={"parenttype": "User", "role": ["in", ROLES_QUE_ESCRIBEN]}, pluck="parent")
     for correo in sorted(set(correos)):
+        if correo == "Administrator":
+            continue    # frappe.get_roles("Administrator") ya devuelve todos los roles
         if frappe.db.exists("Has Role", {"parenttype": "User", "parent": correo, "role": EDITOR}):
             continue
         frappe.get_doc("User", correo).add_roles(EDITOR)

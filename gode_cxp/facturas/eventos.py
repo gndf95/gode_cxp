@@ -30,6 +30,15 @@ def _reiniciar_revision_de_la_enmienda(doc):
     doc.nota_aclaracion = None
 
 
+def apuntar_cfdi_a_la_enmienda(doc, method=None):
+    """La enmienda conserva el enlace al CFDI Recibido, así que el CFDI tiene que apuntar a ella y
+    no a la factura cancelada; si no, 'Ver factura' y crear_factura_desde_cfdi seguirían mandando al
+    documento muerto. Va en 'after_insert' y no en 'validate' porque hasta ahí no hay fila en la base
+    a la que el enlace pueda apuntar."""
+    if doc.get("amended_from") and doc.cfdi_recibido:
+        frappe.db.set_value("CFDI Recibido", doc.cfdi_recibido, "factura", doc.name)
+
+
 def antes_de_enviar(doc, method=None):
     if doc.cfdi_recibido and doc.estado_revision not in ("Aprobada", "Revisada"):
         frappe.throw(_("La factura {0} no se puede enviar en estado de revisión '{1}'.").format(doc.name, doc.estado_revision))

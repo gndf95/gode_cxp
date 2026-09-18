@@ -16,6 +16,7 @@ after_install = ["gode_cxp.setup.instalar.asegurar_configuracion"]
 doc_events = {
     "Purchase Invoice": {
         "validate": "gode_cxp.facturas.eventos.validar_factura",
+        "after_insert": "gode_cxp.facturas.eventos.apuntar_cfdi_a_la_enmienda",
         "before_submit": "gode_cxp.facturas.eventos.antes_de_enviar",
     },
     # Quien pueda escribir facturas necesita CxP Editor o el flujo le deja el formulario en solo

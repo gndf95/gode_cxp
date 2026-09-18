@@ -6,7 +6,8 @@ from frappe.tests.utils import FrappeTestCase
 
 from gode_cxp.facturas import pruebas_comun
 from gode_cxp.facturas.pruebas_comun import EMPRESA
-from gode_cxp.setup.produccion import CUENTAS, ITEM_GENERICO, NADA_QUE_HACER, configurar_empresa
+from gode_cxp.setup.produccion import (CUENTAS, ITEM_GENERICO, NADA_QUE_HACER, _elegir_cuenta_por_pagar,
+                                       configurar_empresa)
 
 RFC = "GES200101ABC"
 FRASE_POR_PAGAR = "Cambiar la cuenta por pagar por defecto"
@@ -122,10 +123,25 @@ class TestProduccion(FrappeTestCase):
         self.assertEqual(frappe.db.get_value("Account", ahora, "is_group"), 0)
 
     def test_no_pisa_una_cuenta_por_pagar_que_ya_sirve(self):
-        """En producción esa cuenta está puesta a propósito: si sirve, ni se menciona."""
-        validas = cuentas_por_pagar_validas()
-        self.assertTrue(validas, "el sitio de pruebas debería tener alguna cuenta Payable")
-        elegida = validas[-1]      # a propósito la última, para que no sea la que el script prefiere
+        """En producción esa cuenta está puesta a propósito: si sirve, ni se menciona. La prueba no
+        es vacua: 'elegida' tiene que ser distinta de la que el script hubiera preferido, si no,
+        no se distingue 'no la tocó' de 'la puso de casualidad'."""
+        empresa = frappe.get_doc("Company", EMPRESA)
+        preferida = _elegir_cuenta_por_pagar(empresa)
+        otras = [c for c in cuentas_por_pagar_validas() if c != preferida]
+        creada = None
+        if otras:
+            elegida = otras[-1]
+        else:
+            # Sólo hay una Payable válida (la preferida): se crea una segunda desechable, bajo el
+            # mismo padre, para poder probar que el script no pisa una que ya sirve aunque no sea
+            # la que él mismo elegiría.
+            padre = frappe.db.get_value("Account", preferida, "parent_account")
+            elegida = creada = frappe.get_doc({
+                "doctype": "Account", "account_name": "Por pagar de prueba desechable",
+                "parent_account": padre, "company": EMPRESA, "root_type": "Liability",
+                "is_group": 0, "account_type": "Payable"}).insert(ignore_permissions=True).name
+        self.assertNotEqual(elegida, preferida)
         antes = frappe.db.get_value("Company", EMPRESA, "default_payable_account")
         frappe.db.set_value("Company", EMPRESA, "default_payable_account", elegida)
         frappe.db.commit()
@@ -136,6 +152,9 @@ class TestProduccion(FrappeTestCase):
         finally:
             frappe.db.set_value("Company", EMPRESA, "default_payable_account", antes)
             frappe.db.commit()
+            if creada:
+                frappe.delete_doc("Account", creada, force=1, ignore_permissions=True)
+                frappe.db.commit()
 
     def test_crea_la_cuenta_que_falta_donde_corresponde(self):
         """El camino de crearla, con un nombre que ninguna otra prueba usa: las cuentas normales
@@ -144,23 +163,51 @@ class TestProduccion(FrappeTestCase):
         with patch.dict(CUENTAS, {"cuenta_ieps": receta}):
             frappe.db.set_single_value("Configuracion CxP", "cuenta_ieps", None)
             frappe.db.commit()
-            r = configurar_empresa(EMPRESA, RFC, dry_run=True)
-            self.assertTrue([a for a in r["acciones"] if a.startswith(f"Crear la cuenta '{receta['nombre']}")],
-                            r["acciones"])
-            self.assertFalse(frappe.db.exists("Account", {"company": EMPRESA, "account_name": receta["nombre"]}))
-            configurar_empresa(EMPRESA, RFC, dry_run=False)
-            nombre = frappe.db.get_value("Account", {"company": EMPRESA, "account_name": receta["nombre"]}, "name")
-            self.assertTrue(nombre, "la cuenta debería haberse creado")
-            cuenta = frappe.get_doc("Account", nombre)
-            self.assertEqual(cuenta.root_type, receta["root_type"])
-            self.assertEqual(cuenta.account_type, receta["account_type"])
-            self.assertEqual(cuenta.is_group, 0)
-            self.assertTrue(cuenta.parent_account)
-            self.assertEqual(frappe.db.get_single_value("Configuracion CxP", "cuenta_ieps"), nombre)
-            # Recién creada no tiene asientos, así que sí se puede borrar y no ensucia el sitio.
+            nombre = None
+            try:
+                r = configurar_empresa(EMPRESA, RFC, dry_run=True)
+                self.assertTrue([a for a in r["acciones"] if a.startswith(f"Crear la cuenta '{receta['nombre']}")],
+                                r["acciones"])
+                self.assertFalse(frappe.db.exists("Account", {"company": EMPRESA, "account_name": receta["nombre"]}))
+                configurar_empresa(EMPRESA, RFC, dry_run=False)
+                nombre = frappe.db.get_value("Account", {"company": EMPRESA, "account_name": receta["nombre"]}, "name")
+                self.assertTrue(nombre, "la cuenta debería haberse creado")
+                cuenta = frappe.get_doc("Account", nombre)
+                self.assertEqual(cuenta.root_type, receta["root_type"])
+                self.assertEqual(cuenta.account_type, receta["account_type"])
+                self.assertEqual(cuenta.is_group, 0)
+                self.assertTrue(cuenta.parent_account)
+                self.assertEqual(frappe.db.get_single_value("Configuracion CxP", "cuenta_ieps"), nombre)
+            finally:
+                # Recién creada no tiene asientos, así que sí se puede borrar y no ensucia el sitio.
+                # En un finally: si una aserción falla a medio camino, la cuenta no debe sobrevivir.
+                frappe.db.set_single_value("Configuracion CxP", "cuenta_ieps", None)
+                if nombre:
+                    frappe.delete_doc("Account", nombre, force=1, ignore_permissions=True)
+                frappe.db.commit()
+
+    def test_no_crea_una_cuenta_si_el_nombre_ya_esta_ocupado(self):
+        """Si ya existe una cuenta con el nombre completo que el script pondría, pero no sirve
+        (es grupo, o de otro root_type: _buscar_cuenta no la encuentra), no hay que pisarla ni
+        intentar un duplicado que Frappe rechazaría de todos modos: hay que avisar y parar."""
+        receta = dict(CUENTAS["cuenta_ieps"], nombre="IEPS de prueba ocupada", alternas=())
+        with patch.dict(CUENTAS, {"cuenta_ieps": receta}):
             frappe.db.set_single_value("Configuracion CxP", "cuenta_ieps", None)
-            frappe.delete_doc("Account", nombre, force=1, ignore_permissions=True)
             frappe.db.commit()
+            abbr = frappe.db.get_value("Company", EMPRESA, "abbr")
+            nombre_completo = f"{receta['nombre']} - {abbr}"
+            padre = frappe.db.get_value("Account", {"company": EMPRESA, "root_type": "Asset", "is_group": 1,
+                                                    "parent_account": ["is", "set"]}, "name", order_by="lft")
+            frappe.get_doc({"doctype": "Account", "account_name": receta["nombre"], "parent_account": padre,
+                            "company": EMPRESA, "root_type": "Asset", "is_group": 1}).insert(ignore_permissions=True)
+            try:
+                self.assertTrue(frappe.db.exists("Account", nombre_completo))
+                with self.assertRaises(frappe.ValidationError):
+                    configurar_empresa(EMPRESA, RFC, dry_run=True)
+            finally:
+                frappe.db.set_single_value("Configuracion CxP", "cuenta_ieps", None)
+                frappe.delete_doc("Account", nombre_completo, force=1, ignore_permissions=True)
+                frappe.db.commit()
 
     def test_las_cuentas_configuradas_quedan_del_tipo_correcto(self):
         olvidar_las_cuentas()
@@ -199,6 +246,24 @@ class TestProduccion(FrappeTestCase):
             frappe.db.set_value("Company", EMPRESA, "default_payable_account", antes)
             frappe.db.commit()
 
+    def test_no_se_puede_dar_a_mano_una_cuenta_por_pagar_en_otra_moneda(self):
+        """A diferencia del root_type y el account_type (que sólo se avisan con REVISAR), la moneda
+        se rechaza: una cuenta por pagar en otra moneda rompería las facturas."""
+        moneda_empresa = frappe.db.get_value("Company", EMPRESA, "default_currency")
+        otra_moneda = "USD" if moneda_empresa != "USD" else "MXN"
+        padre = frappe.db.get_value("Account", {"company": EMPRESA, "root_type": "Liability", "is_group": 1,
+                                                "parent_account": ["is", "set"]}, "name", order_by="lft")
+        cuenta = frappe.get_doc({"doctype": "Account", "account_name": "Por pagar en otra moneda de prueba",
+                                 "parent_account": padre, "company": EMPRESA, "root_type": "Liability",
+                                 "is_group": 0, "account_type": "Payable",
+                                 "account_currency": otra_moneda}).insert(ignore_permissions=True).name
+        try:
+            with self.assertRaises(frappe.ValidationError):
+                configurar_empresa(EMPRESA, RFC, dry_run=True, cuentas={"default_payable_account": cuenta})
+        finally:
+            frappe.delete_doc("Account", cuenta, force=1, ignore_permissions=True)
+            frappe.db.commit()
+
     def test_avisa_si_la_cuenta_a_mano_no_es_del_tipo_esperado(self):
         """El aviso REVISAR sale siempre: en dry-run y también cuando ya no hay nada que cambiar."""
         olvidar_las_cuentas()
@@ -229,3 +294,9 @@ class TestProduccion(FrappeTestCase):
     def test_la_empresa_tiene_que_existir(self):
         with self.assertRaises(frappe.ValidationError):
             configurar_empresa("EMPRESA QUE NO EXISTE", RFC, dry_run=True)
+
+    def test_el_rfc_tiene_que_tener_forma_valida(self):
+        with self.assertRaises(frappe.ValidationError):
+            configurar_empresa(EMPRESA, "", dry_run=True)
+        with self.assertRaises(frappe.ValidationError):
+            configurar_empresa(EMPRESA, "MALO", dry_run=True)

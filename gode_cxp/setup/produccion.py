@@ -6,9 +6,12 @@
     devuelve la lista de frases de lo que haría, para que una persona la lea antes de aplicarla;
   - con `dry_run=False` aplica sólo lo que falta; correrlo dos veces seguidas deja `acciones` vacía.
 
-No está expuesta al web (no lleva @frappe.whitelist): se corre a mano desde `bench console` o
-`bench execute`, nunca desde el navegador.
+No está expuesta al web (no lleva @frappe.whitelist). Ejecutar con
+`bench --site X execute gode_cxp.setup.produccion.configurar_empresa --kwargs ...`
+(no desde `bench console` sin commit; nunca desde el navegador).
 """
+import re
+
 import frappe
 from frappe import _
 
@@ -90,6 +93,10 @@ ETIQUETAS = {
 
 NADA_QUE_HACER = "Nada que hacer: la empresa ya está configurada."
 
+# RFC de persona moral (12) o física (13): 3-4 letras (o Ñ/&), 6 dígitos de fecha, 3 caracteres de
+# homoclave. No valida el dígito verificador ni que exista en el SAT, sólo la forma.
+RFC_REGEX = re.compile(r"^[A-ZÑ&]{3,4}[0-9]{6}[A-Z0-9]{3}$")
+
 
 def configurar_empresa(company, rfc, dry_run=True, cuentas=None):
     """Deja la empresa lista para cuentas por pagar y devuelve el reporte de lo que hizo (o haría).
@@ -104,6 +111,7 @@ def configurar_empresa(company, rfc, dry_run=True, cuentas=None):
     if not frappe.db.exists("Company", company):
         frappe.throw(_("No existe la empresa '{0}'.").format(company))
     cuentas = _validar_las_cuentas_a_mano(company, cuentas)
+    rfc_normalizado = _validar_rfc(rfc)
     acciones = []
     empresa = frappe.get_doc("Company", company)
     _cuenta_por_pagar(empresa, cuentas.get(CAMPO_POR_PAGAR), acciones, dry_run)
@@ -111,7 +119,7 @@ def configurar_empresa(company, rfc, dry_run=True, cuentas=None):
     conf = frappe.get_doc("Configuracion CxP")
     valores = {
         "empresa": company,
-        "rfc_empresa": (rfc or "").strip().upper(),
+        "rfc_empresa": rfc_normalizado,
         "grupo_proveedores": GRUPO_PROVEEDORES,
         "item_generico": ITEM_GENERICO,
         "dias_credito_default": conf.dias_credito_default or DIAS_CREDITO_DEFAULT,
@@ -132,10 +140,21 @@ def configurar_empresa(company, rfc, dry_run=True, cuentas=None):
         conf.update(cambios)
         conf.save(ignore_permissions=True)
 
-    if not dry_run:
+    if not dry_run and acciones:
         frappe.db.commit()
     return {"dry_run": dry_run, "empresa": company, "acciones": acciones,
             "resumen": _resumen(acciones, dry_run)}
+
+
+def _validar_rfc(rfc):
+    """Normaliza y valida la forma del RFC antes de escribir nada: sólo la forma (12 o 13
+    caracteres, con el patrón de letras/fecha/homoclave), no el dígito verificador ni que exista
+    en el SAT."""
+    normalizado = (rfc or "").strip().upper()
+    if len(normalizado) not in (12, 13) or not RFC_REGEX.match(normalizado):
+        frappe.throw(_("El RFC '{0}' no tiene una forma válida (12 o 13 caracteres: letras, fecha "
+                       "y homoclave).").format(rfc))
+    return normalizado
 
 
 def _resumen(acciones, dry_run):
@@ -159,7 +178,7 @@ def _validar_las_cuentas_a_mano(company, cuentas):
     cuentas = {campo: cuenta for campo, cuenta in (cuentas or {}).items() if cuenta}
     for campo, cuenta in cuentas.items():
         receta = CUENTA_POR_PAGAR if campo == CAMPO_POR_PAGAR else CUENTAS[campo]
-        datos = frappe.db.get_value("Account", cuenta, ["company", "is_group"], as_dict=True)
+        datos = frappe.db.get_value("Account", cuenta, ["company", "is_group", "account_currency"], as_dict=True)
         if not datos:
             frappe.throw(_("No existe la cuenta '{0}' que se pidió usar como {1}.")
                          .format(cuenta, receta["etiqueta"]))
@@ -169,6 +188,15 @@ def _validar_las_cuentas_a_mano(company, cuentas):
         if datos.is_group:
             frappe.throw(_("La cuenta '{0}' es un grupo; para {1} hace falta una cuenta de detalle.")
                          .format(cuenta, receta["etiqueta"]))
+        # La cuenta por pagar por defecto es la que ERPNext usa como 'credit_to' de cada factura de
+        # compra: en otra moneda que la de la empresa rompería esas facturas. A diferencia del
+        # root_type y el account_type (que sólo se avisan con REVISAR), esto se rechaza.
+        if campo == CAMPO_POR_PAGAR and datos.account_currency:
+            moneda_empresa = frappe.db.get_value("Company", company, "default_currency")
+            if datos.account_currency != moneda_empresa:
+                frappe.throw(_("La cuenta '{0}' está en {1}, pero la empresa '{2}' usa {3}: no sirve "
+                               "como {4}.").format(cuenta, datos.account_currency, company,
+                                                   moneda_empresa, receta["etiqueta"]))
     return cuentas
 
 
@@ -247,6 +275,11 @@ def _resolver_cuenta(company, abbr, campo, conf, a_mano, acciones, dry_run):
         frappe.throw(_("No hay ningún grupo de cuentas de tipo {0} en '{1}' donde colgar '{2}'.")
                      .format(receta["root_type"], company, receta["nombre"]))
     nombre_completo = f"{receta['nombre']} - {abbr}"
+    if frappe.db.exists("Account", nombre_completo):
+        # Existe pero _buscar_cuenta no la encontró (es grupo o de otro root_type/account_type):
+        # no se pisa ni se intenta crear un duplicado, que Frappe rechazaría de todos modos.
+        frappe.throw(_("La cuenta {0} ya existe pero no sirve como {1} (es grupo o de otro tipo). "
+                       "Pásala o elige otra con cuentas={{...}}").format(nombre_completo, receta["etiqueta"]))
     acciones.append(f"Crear la cuenta '{nombre_completo}' bajo '{padre}' para usarla como {receta['etiqueta']}")
     if dry_run:
         return nombre_completo

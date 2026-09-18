@@ -148,7 +148,14 @@ def _ruta_segura(ruta):
 
 def _procesar_uno(indice, etiqueta, nombre, xml_bytes, pdf_bytes, origen, resultado):
     """Cada archivo del lote va en su propio punto de retorno: si revienta a media faena, se deshace
-    lo que dejó a medias y el lote sigue con el siguiente."""
+    lo que dejó a medias en la BASE DE DATOS y el lote sigue con el siguiente.
+
+    Lo que el rollback a un savepoint NO deshace es el archivo ya escrito en disco: File.write_file
+    registra su limpieza en frappe.db.after_rollback, que sólo corre en un rollback completo. Caso
+    real: un ZIP con el XML bueno y un PDF corrupto -- el File del XML se inserta, el del PDF revienta,
+    la fila del XML desaparece de la base y su archivo físico se queda huérfano en
+    sites/<sitio>/private/files. No rompe nada (nadie lo referencia) pero ocupa espacio; si algún día
+    estorba, hay que barrerlo aparte."""
     punto = f"cxp_{indice}"
     frappe.db.savepoint(punto)
     try:

@@ -104,7 +104,9 @@ def asegurar_rol_editor():
         except Exception:
             # add_roles guarda el User entero: si ese usuario no valida por cualquier otra razón
             # (un campo obligatorio vacío de antes), no debe tumbar la migración de toda la app.
-            frappe.log_error(title=f"CxP: no se pudo dar {EDITOR} a {correo}")
+            # log_error con sólo 'title' (message=None) en v15 mueve el título al mensaje y deja
+            # el registro sin título ni traceback: hay que pasar los dos a propósito.
+            frappe.log_error(title=f"CxP: no se pudo dar {EDITOR} a {correo}", message=frappe.get_traceback())
 
 
 def asegurar_perfil_modulos():

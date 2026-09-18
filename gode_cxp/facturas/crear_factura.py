@@ -33,6 +33,11 @@ def crear_factura_desde_cfdi(cfdi_name):
         "cfdi_uuid": cfdi.uuid, "cfdi_recibido": cfdi.name, "rfc_emisor": cfdi.rfc_emisor,
         "metodo_pago_sat": cfdi.metodo_pago, "forma_pago_sat": cfdi.forma_pago, "estado_revision": "Recibida",
         "is_return": 1 if es_retorno else 0, "update_stock": 0,
+        # Sin redondeo, siempre, pase lo que pase en Global Defaults: el total de la factura tiene
+        # que ser el del XML al centavo. Con el redondeo activo ERPNext deja 149.04 en 149.00 y
+        # manda los 4 centavos a una cuenta de ajuste, y entonces ni el pago ni la conciliación
+        # cuadran contra el CFDI. Vale igual para la nota de crédito, que sale de aquí mismo.
+        "disable_rounded_total": 1,
     })
     if es_retorno:
         pi.return_against = _factura_relacionada(cfdi)

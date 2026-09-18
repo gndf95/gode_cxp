@@ -12,9 +12,13 @@ from gode_cxp.facturas.recepcion import procesar_xml
 # Los métodos de abajo son whitelisted: todo lo que llega de fuera se valida aquí.
 ORIGENES = ("SAT", "Carga manual", "Correo")          # opciones del campo CFDI Recibido.origen
 CARPETAS_DEL_SITIO = ("/files/", "/private/files/")   # lo único que se acepta como file_url
-MAX_ENTRADAS_ZIP = 200                                # archivos dentro de un ZIP
+# Los topes son contra el "zip bomb", no contra el uso normal: el ZIP de un mes entero trae unos
+# 450 XML con su PDF (~900 entradas) y pesa bastante descomprimido.
+MAX_ENTRADAS_ZIP = 1000                               # archivos dentro de un ZIP
 MAX_BYTES_MIEMBRO = 25 * 1024 * 1024                  # tamaño descomprimido de un archivo del ZIP
-MAX_BYTES_ZIP = 100 * 1024 * 1024                     # tamaño descomprimido de todo el ZIP
+MAX_BYTES_ZIP = 300 * 1024 * 1024                     # tamaño descomprimido de todo el ZIP
+LOTE_GRANDE = 50                                      # a partir de aquí el lote se confirma por partes
+CONFIRMAR_CADA = 25                                   # archivos entre un frappe.db.commit() y el siguiente
 
 
 @frappe.whitelist()
@@ -46,10 +50,30 @@ def procesar_archivos(file_urls, origen="Carga manual"):
             _anotar_error(resultado, nombre, e)
             partes = []
         for etiqueta, xml_nombre, xml_bytes, pdf_bytes in partes:
+            _confirmar_si_el_lote_es_grande(indice)
             _procesar_uno(indice, etiqueta, xml_nombre, xml_bytes, pdf_bytes, origen, resultado)
             indice += 1
     _borrar_temporales(temporales)
     return resultado
+
+
+def _confirmar_si_el_lote_es_grande(procesados):
+    """Un lote chico (una carga normal, y todas las pruebas) va entero en una sola transacción, como
+    siempre. Pero el ZIP de un mes son cientos de XML y cada uno inserta un CFDI, quizá un proveedor
+    y una factura con sus renglones: dejar todo sin confirmar hasta el final significa miles de filas
+    bloqueadas y, si el request se muere a la mitad (timeout del proxy, reinicio del worker), perder
+    todo lo que ya se había leído. De LOTE_GRANDE archivos en adelante se confirma cada
+    CONFIRMAR_CADA, así lo procesado se queda guardado.
+
+    Se confirma ENTRE archivos y nunca dentro de uno: un commit borra todos los savepoints abiertos,
+    y los de _procesar_uno ya se cerraron cuando terminó la vuelta anterior. El que viene abrirá el
+    suyo después de este commit, así que su rollback sigue deshaciendo sólo lo suyo.
+
+    Lo que cambia para quien carga: si el request se cae a media faena, lo confirmado se queda en la
+    bandeja. Volver a subir el mismo ZIP no duplica nada -- esos CFDI ya salen como 'duplicados' por
+    su UUID -- pero el resumen de la carga que se murió, ese sí se pierde."""
+    if procesados >= LOTE_GRANDE and procesados % CONFIRMAR_CADA == 0:
+        frappe.db.commit()
 
 
 def _filtros_de_la_subida(url=None):

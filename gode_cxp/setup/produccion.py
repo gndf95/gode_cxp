@@ -339,13 +339,15 @@ def _cuenta_padre(company, receta):
 def _asegurar_item(acciones, dry_run):
     """El artículo con el que entra cada concepto del CFDI a la factura de compra."""
     if frappe.db.exists("Item", ITEM_GENERICO):
+        # Ya existe: lo único que puede faltarle es que su unidad acepte cantidades con fracción.
+        _permitir_decimales(frappe.db.get_value("Item", ITEM_GENERICO, "stock_uom"), acciones, dry_run)
         return
     acciones.append(f"Crear el artículo '{ITEM_GENERICO}' (con él entra cada concepto del CFDI a la factura)")
+    uom = _elegir_uom()
+    _permitir_decimales(uom, acciones, dry_run)
     if dry_run:
         return
     grupo = frappe.db.get_value("Item Group", {"is_group": 0}, "name", order_by="lft")
-    uom = (frappe.db.get_value("UOM", {"name": ["in", ["Nos", "Nos.", "Unit", "Unidad(es)"]]}, "name")
-           or frappe.db.get_value("UOM", {}, "name", order_by="name"))
     doc = frappe.get_doc({"doctype": "Item", "item_code": ITEM_GENERICO, "item_name": "Concepto CFDI",
                           "item_group": grupo, "stock_uom": uom, "is_stock_item": 0,
                           "is_purchase_item": 1, "is_sales_item": 0}).insert(ignore_permissions=True)
@@ -356,6 +358,28 @@ def _asegurar_item(acciones, dry_run):
         frappe.throw(_("El artículo quedó como '{0}' y no como '{1}': este sitio nombra los artículos "
                        "por serie. Cambia Stock Settings > 'Item Naming By' a 'Item Code' y vuelve a "
                        "correr esto (al fallar no se guarda nada).").format(doc.name, ITEM_GENERICO))
+
+
+def _elegir_uom():
+    """La unidad del artículo genérico: da igual cuál sea (los conceptos llevan su unidad real en la
+    descripción), pero tiene que existir en el sitio."""
+    return (frappe.db.get_value("UOM", {"name": ["in", ["Nos", "Nos.", "Unit", "Unidad(es)"]]}, "name")
+            or frappe.db.get_value("UOM", {}, "name", order_by="name"))
+
+
+def _permitir_decimales(uom, acciones, dry_run):
+    """Un CFDI puede traer cantidades con fracción (10.26 kg de pollo). Si la unidad del artículo
+    está marcada como 'debe ser número entero' -- 'Nos' viene así de fábrica en ERPNext --, la
+    factura se rechaza con "la cantidad no puede ser una fracción" y el CFDI no se puede capturar.
+    Se le quita la marca a esa unidad; es un ajuste del catálogo, no de la factura."""
+    if not uom or not frappe.db.get_value("UOM", uom, "must_be_whole_number"):
+        return
+    acciones.append(f"Permitir decimales en la unidad '{uom}' (los CFDI traen cantidades con fracción)")
+    if not dry_run:
+        # db.set_value y no el doc: la UOM no tiene validaciones y así no se toca nada más de ella.
+        # El valor que lee ERPNext (frappe.db.get_values con cache) vive en la conexión y se limpia
+        # en cada commit, así que el cambio se ve en cuanto se confirma.
+        frappe.db.set_value("UOM", uom, "must_be_whole_number", 0)
 
 
 def _asegurar_grupo(acciones, dry_run):

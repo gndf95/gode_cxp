@@ -23,7 +23,7 @@
   {"fieldname": "naturaleza", "fieldtype": "Select", "label": "Naturaleza", "options": "\n06\n12", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1, "description": "06 = Banamex a Banamex; 12 = interbancario SPEI"},
   {"fieldname": "col_lote", "fieldtype": "Column Break"},
   {"fieldname": "estado_lote", "fieldtype": "Select", "label": "Estado del lote", "options": "Preparado\nAutorizado\nExportado\nTransmitido\nAplicado\nParcial\nRechazado\nCancelado", "default": "Preparado", "read_only": 1, "allow_on_submit": 1, "in_list_view": 1, "in_standard_filter": 1},
-  {"fieldname": "total_lote", "fieldtype": "Currency", "label": "Total del lote", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "total_lote", "fieldtype": "Currency", "label": "Total del lote", "options": "Company:company:default_currency", "read_only": 1, "in_list_view": 1},
   {"fieldname": "amended_from", "fieldtype": "Link", "label": "Enmienda de", "options": "Lote de Pago", "read_only": 1, "no_copy": 1, "print_hide": 1}
  ],
  "permissions": [

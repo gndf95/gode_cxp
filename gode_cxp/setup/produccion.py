@@ -112,6 +112,7 @@ ETIQUETAS = {
 }
 
 NADA_QUE_HACER = "Nada que hacer: la empresa ya está configurada."
+NADA_QUE_HACER_PAGOS = "Nada que hacer: el banco y el TEF ya están configurados."
 
 # RFC de persona moral (12) o física (13): 3-4 letras (o Ñ/&), 6 dígitos de fecha, 3 caracteres de
 # homoclave. No valida el dígito verificador ni que exista en el SAT, sólo la forma.
@@ -125,16 +126,18 @@ def configurar_empresa(company, rfc, dry_run=True, cuentas=None):
     conviene apuntar a una cuenta del catálogo en vez de crear una nueva. Las claves válidas son
     los cinco campos de Configuracion CxP y `default_payable_account` (el de la Company).
 
-    Devuelve {"dry_run", "empresa", "acciones", "resumen"}: `acciones` trae sólo las cosas por
-    hacer (queda vacía si no hay ninguna) y `resumen` es la frase que resume la corrida.
+    Devuelve {"dry_run", "empresa", "acciones", "avisos", "resumen"}: `acciones` trae sólo las cosas
+    por hacer (queda vacía si no hay ninguna), `avisos` los renglones REVISAR: (cosas que hay que
+    mirar a mano, pero que no son trabajo pendiente) y `resumen` la frase que resume la corrida.
     """
     if not frappe.db.exists("Company", company):
         frappe.throw(_("No existe la empresa '{0}'.").format(company))
     cuentas = _validar_las_cuentas_a_mano(company, cuentas)
     rfc_normalizado = _validar_rfc(rfc)
     acciones = []
+    avisos = []
     empresa = frappe.get_doc("Company", company)
-    _cuenta_por_pagar(empresa, cuentas.get(CAMPO_POR_PAGAR), acciones, dry_run)
+    _cuenta_por_pagar(empresa, cuentas.get(CAMPO_POR_PAGAR), acciones, avisos, dry_run)
 
     conf = frappe.get_doc("Configuracion CxP")
     valores = {
@@ -146,7 +149,7 @@ def configurar_empresa(company, rfc, dry_run=True, cuentas=None):
     }
     for campo in CUENTAS:
         valores[campo] = _resolver_cuenta(company, empresa.abbr, campo, conf,
-                                          cuentas.get(campo), acciones, dry_run)
+                                          cuentas.get(campo), acciones, avisos, dry_run)
 
     _asegurar_item(acciones, dry_run)
     _asegurar_grupo(acciones, dry_run)
@@ -162,20 +165,23 @@ def configurar_empresa(company, rfc, dry_run=True, cuentas=None):
 
     if not dry_run and acciones:
         frappe.db.commit()
-    return {"dry_run": dry_run, "empresa": company, "acciones": acciones,
-            "resumen": _resumen(acciones, dry_run)}
+    return {"dry_run": dry_run, "empresa": company, "acciones": acciones, "avisos": avisos,
+            "resumen": _resumen(acciones, avisos, dry_run)}
 
 
 def configurar_pagos(company, contrato, sucursal, cuenta, nombre_tef, concepto, cuenta_banco_erp, dry_run=True):
     """Banco y cuenta de cargo de la empresa + datos del archivo TEF. Idempotente; dry_run no escribe.
 
-    Devuelve el mismo contrato de reporte que `configurar_empresa`: {"acciones", "dry_run",
-    "resumen"}, con `acciones` vacía cuando no hay nada por hacer.
+    Devuelve el mismo contrato de reporte que `configurar_empresa`: {"acciones", "avisos",
+    "dry_run", "resumen"}, con `acciones` vacía cuando no hay nada por hacer.
 
     `cuenta_banco_erp` es la cuenta CONTABLE del banco de cargo (la del catálogo de la empresa);
     de ella se cuelga el `Bank Account` "Banamex GODE - Banamex", que es la cuenta bancaria con la
     que ERPNext registra los pagos.
     """
+    # TODO lo que se valida va ANTES del primer insert: si algo falta, esta función no puede dejar a
+    # medias un banco recién creado y luego fallar (el dry-run prometería cosas distintas que la
+    # corrida de verdad, y en producción habría que limpiar a mano).
     _validar_datos_tef(contrato, sucursal, cuenta, nombre_tef, concepto)
     if not frappe.db.exists("Company", company):
         frappe.throw(_("No existe la empresa {0}").format(company))
@@ -183,36 +189,28 @@ def configurar_pagos(company, contrato, sucursal, cuenta, nombre_tef, concepto, 
     if not cta or cta.company != company or cta.is_group:
         frappe.throw(_("La cuenta contable del banco {0} debe existir, ser de {1} y no ser grupo")
                      .format(cuenta_banco_erp, company))
-    acciones = []
-    # El account_type sólo se avisa, no se rechaza: el catálogo es de la empresa, igual que en
-    # `configurar_empresa` con el root_type de las cuentas de impuestos.
-    if cta.account_type != "Bank":
-        acciones.append(f"REVISAR: la cuenta contable '{cuenta_banco_erp}' no es de tipo Bank")
-    if not frappe.db.exists("Bank", BANCO_EMPRESA):
-        acciones.append(f"Crear el banco '{BANCO_EMPRESA}'")
-        if not dry_run:
-            frappe.get_doc({"doctype": "Bank", "bank_name": BANCO_EMPRESA}).insert(ignore_permissions=True)
-    # El nombre del Bank Account lo arma ERPNext con account_name + " - " + bank (autoname).
-    nombre_cuenta = f"{NOMBRE_CUENTA_EMPRESA} - {BANCO_EMPRESA}"
-    if not frappe.db.exists("Bank Account", nombre_cuenta):
-        acciones.append(f"Crear la cuenta bancaria de la empresa '{nombre_cuenta}' ({sucursal}-{cuenta}) "
-                        f"ligada a '{cuenta_banco_erp}'")
-        if not dry_run:
-            frappe.get_doc({"doctype": "Bank Account", "account_name": NOMBRE_CUENTA_EMPRESA,
-                            "bank": BANCO_EMPRESA, "is_company_account": 1, "company": company,
-                            "account": cuenta_banco_erp, "bank_account_no": f"{sucursal}{cuenta}",
-                            "branch_code": sucursal}).insert(ignore_permissions=True)
     conf = frappe.get_doc("Configuracion CxP")
     # La referencia numérica y el modo de pago se respetan si ya están puestos a mano en el sitio;
     # sólo se rellenan cuando están vacíos.
+    modo_pago = conf.modo_pago_transferencia or MODO_PAGO_TRANSFERENCIA
+    if not frappe.db.exists("Mode of Payment", modo_pago):
+        frappe.throw(_("No existe el modo de pago {0}: créalo (tipo Bank) antes de configurar los pagos.")
+                     .format(modo_pago))
+
+    acciones = []
+    avisos = []
+    # El account_type sólo se avisa, no se rechaza: el catálogo es de la empresa, igual que en
+    # `configurar_empresa` con el root_type de las cuentas de impuestos.
+    if cta.account_type != "Bank":
+        avisos.append(f"REVISAR: la cuenta contable '{cuenta_banco_erp}' no es de tipo Bank")
+    nombre_cuenta = _cuenta_bancaria_de_la_empresa(company, cuenta_banco_erp, sucursal, cuenta,
+                                                   acciones, avisos, dry_run)
+
     deseado = {"contrato_banamex": contrato, "cuenta_cargo_sucursal": sucursal, "cuenta_cargo_numero": cuenta,
                "nombre_empresa_tef": nombre_tef, "concepto_tef": concepto,
                "referencia_numerica_modo": conf.referencia_numerica_modo or REFERENCIA_POR_FECHA,
                "cuenta_banco_erp": cuenta_banco_erp, "cuenta_bancaria_empresa": nombre_cuenta,
-               "modo_pago_transferencia": conf.modo_pago_transferencia or MODO_PAGO_TRANSFERENCIA}
-    if not frappe.db.exists("Mode of Payment", deseado["modo_pago_transferencia"]):
-        frappe.throw(_("No existe el modo de pago {0}: créalo (tipo Bank) antes de configurar los pagos.")
-                     .format(deseado["modo_pago_transferencia"]))
+               "modo_pago_transferencia": modo_pago}
     cambios = {k: v for k, v in deseado.items() if (conf.get(k) or None) != (v or None)}
     for k, v in cambios.items():
         acciones.append(f"Configuración CxP: poner '{v}' como {ETIQUETAS_BANCO[k]} "
@@ -223,7 +221,45 @@ def configurar_pagos(company, contrato, sucursal, cuenta, nombre_tef, concepto, 
         conf.save()
     if not dry_run and acciones:
         frappe.db.commit()
-    return {"acciones": acciones, "dry_run": dry_run, "resumen": _resumen(acciones, dry_run)}
+    return {"acciones": acciones, "avisos": avisos, "dry_run": dry_run,
+            "resumen": _resumen(acciones, avisos, dry_run, NADA_QUE_HACER_PAGOS)}
+
+
+def _cuenta_bancaria_de_la_empresa(company, cuenta_banco_erp, sucursal, cuenta, acciones, avisos, dry_run):
+    """El `Bank Account` de la empresa con el que ERPNext registra los pagos. Devuelve su nombre.
+
+    ERPNext NO deja dos `Bank Account` de empresa sobre la misma cuenta contable
+    (erpnext/accounts/doctype/bank_account/bank_account.py::validate_account), así que si el sitio
+    ya trae una cuenta de empresa de Banamex, o cualquiera ligada a `cuenta_banco_erp`, se reusa: es
+    lo que va a pasar en producción, donde la cuenta bancaria suele estar dada de alta de antes.
+    """
+    # El nombre lo arma ERPNext con account_name + " - " + bank (autoname).
+    esperada = f"{NOMBRE_CUENTA_EMPRESA} - {BANCO_EMPRESA}"
+    existente = (esperada if frappe.db.exists("Bank Account", esperada) else None) \
+        or frappe.db.get_value("Bank Account", {"company": company, "bank": BANCO_EMPRESA,
+                                                "is_company_account": 1}, "name", order_by="creation") \
+        or frappe.db.get_value("Bank Account", {"account": cuenta_banco_erp}, "name", order_by="creation")
+    if existente:
+        if existente != esperada:
+            acciones.append(f"Reusar la cuenta bancaria '{existente}' como cuenta de cargo de la empresa "
+                            f"(ya existe; ERPNext no admite dos ligadas a la misma cuenta contable)")
+        ligada = frappe.db.get_value("Bank Account", existente, "account")
+        if ligada != cuenta_banco_erp:
+            avisos.append(f"REVISAR: la cuenta bancaria '{existente}' está ligada a la cuenta contable "
+                          f"'{ligada or 'ninguna'}' y no a '{cuenta_banco_erp}'")
+        return existente
+    if not frappe.db.exists("Bank", BANCO_EMPRESA):
+        acciones.append(f"Crear el banco '{BANCO_EMPRESA}'")
+        if not dry_run:
+            frappe.get_doc({"doctype": "Bank", "bank_name": BANCO_EMPRESA}).insert(ignore_permissions=True)
+    acciones.append(f"Crear la cuenta bancaria de la empresa '{esperada}' ({sucursal}-{cuenta}) "
+                    f"ligada a '{cuenta_banco_erp}'")
+    if not dry_run:
+        frappe.get_doc({"doctype": "Bank Account", "account_name": NOMBRE_CUENTA_EMPRESA,
+                        "bank": BANCO_EMPRESA, "is_company_account": 1, "company": company,
+                        "account": cuenta_banco_erp, "bank_account_no": f"{sucursal}{cuenta}",
+                        "branch_code": sucursal}).insert(ignore_permissions=True)
+    return esperada
 
 
 def _validar_datos_tef(contrato, sucursal, cuenta, nombre_tef, concepto):
@@ -239,8 +275,10 @@ def _validar_datos_tef(contrato, sucursal, cuenta, nombre_tef, concepto):
         errores.append("la cuenta de cargo debe tener 7 dígitos")
     if not re.fullmatch(r"[A-Z0-9 ,/]{1,36}", nombre_tef or ""):
         errores.append("el nombre de la empresa para el TEF: máximo 36, mayúsculas sin acentos ni puntos")
-    if not (concepto or "").strip() or len(concepto) > 20:
-        errores.append("el concepto del TEF: 1 a 20 caracteres")
+    # El concepto va tal cual a un archivo ASCII de ancho fijo: un acento o un salto de línea
+    # descuadran el renglón y Banamex rechaza el archivo entero.
+    if not (concepto or "").strip() or not re.fullmatch(r"[ -~]{1,20}", concepto or ""):
+        errores.append("el concepto del TEF: 1 a 20 caracteres ASCII imprimibles (sin acentos)")
     if errores:
         frappe.throw(_("Datos del banco mal formados: {0}").format("; ".join(errores)))
 
@@ -256,14 +294,19 @@ def _validar_rfc(rfc):
     return normalizado
 
 
-def _resumen(acciones, dry_run):
+def _resumen(acciones, avisos, dry_run, nada=NADA_QUE_HACER):
     """La frase de una línea que resume la corrida. Va aparte de `acciones` a propósito: `acciones`
-    es la lista de cosas por hacer y tiene que quedar vacía cuando no hay ninguna."""
+    es la lista de cosas por hacer y tiene que quedar vacía cuando no hay ninguna. Los `avisos`
+    (los renglones REVISAR:) se cuentan aparte: no son trabajo pendiente, pero hay que mirarlos."""
     if not acciones:
-        return NADA_QUE_HACER
-    if dry_run:
-        return f"Dry-run: {len(acciones)} cosas por hacer; no se escribió nada."
-    return f"Aplicado: {len(acciones)} cosas."
+        frase = nada
+    elif dry_run:
+        frase = f"Dry-run: {len(acciones)} cosas por hacer; no se escribió nada."
+    else:
+        frase = f"Aplicado: {len(acciones)} cosas."
+    if avisos:
+        frase += f" Y {len(avisos)} aviso(s) que revisar (ver 'avisos')."
+    return frase
 
 
 def _validar_las_cuentas_a_mano(company, cuentas):
@@ -299,15 +342,15 @@ def _validar_las_cuentas_a_mano(company, cuentas):
     return cuentas
 
 
-def _cuenta_por_pagar(empresa, a_mano, acciones, dry_run):
+def _cuenta_por_pagar(empresa, a_mano, acciones, avisos, dry_run):
     """La cuenta por pagar por defecto de la empresa: ERPNext la usa como 'credit_to' de cada
     factura de compra. Si la empresa ya apunta a una cuenta que sirve, NO se toca: en producción
     esa cuenta está puesta a propósito y moverla cambiaría dónde caen los asientos."""
     actual = empresa.default_payable_account
     if a_mano:
         # Elegida a mano: los avisos salen siempre, y se pone aunque ya hubiera una válida.
-        _avisar_si_no_es_del_root(a_mano, CUENTA_POR_PAGAR, acciones)
-        _avisar_si_no_es_del_tipo(a_mano, CUENTA_POR_PAGAR, acciones)
+        _avisar_si_no_es_del_root(a_mano, CUENTA_POR_PAGAR, avisos)
+        _avisar_si_no_es_del_tipo(a_mano, CUENTA_POR_PAGAR, avisos)
         nueva = a_mano
     elif _sirve_como_cuenta_por_pagar(empresa, actual):
         return
@@ -352,14 +395,14 @@ def _elegir_cuenta_por_pagar(empresa):
     return (proveedores or en_moneda)[0].name
 
 
-def _resolver_cuenta(company, abbr, campo, conf, a_mano, acciones, dry_run):
+def _resolver_cuenta(company, abbr, campo, conf, a_mano, acciones, avisos, dry_run):
     """Devuelve el nombre de la cuenta que debe quedar en `campo`, creándola si hace falta."""
     receta = CUENTAS[campo]
     if a_mano:
         # Elegida a mano: los avisos salen siempre, también en dry-run y aunque no cambie nada,
         # porque hablan de la cuenta que va a quedar configurada, no del cambio.
-        _avisar_si_no_es_del_root(a_mano, receta, acciones)
-        _avisar_si_no_es_del_tipo(a_mano, receta, acciones)
+        _avisar_si_no_es_del_root(a_mano, receta, avisos)
+        _avisar_si_no_es_del_tipo(a_mano, receta, avisos)
         return a_mano
     actual = conf.get(campo)
     if actual and frappe.db.get_value("Account", actual, "company") == company:
@@ -367,7 +410,7 @@ def _resolver_cuenta(company, abbr, campo, conf, a_mano, acciones, dry_run):
     existente = _buscar_cuenta(company, receta)
     if existente:
         acciones.append(f"Reusar la cuenta '{existente}' del catálogo como {receta['etiqueta']}")
-        _avisar_si_no_es_del_tipo(existente, receta, acciones)
+        _avisar_si_no_es_del_tipo(existente, receta, avisos)
         return existente
     padre = _cuenta_padre(company, receta)
     if not padre:
@@ -388,24 +431,24 @@ def _resolver_cuenta(company, abbr, campo, conf, a_mano, acciones, dry_run):
     return doc.name
 
 
-def _avisar_si_no_es_del_tipo(cuenta, receta, acciones):
+def _avisar_si_no_es_del_tipo(cuenta, receta, avisos):
     """Si se reaprovecha una cuenta del catálogo que no está marcada como el tipo que ERPNext espera
     (las de impuestos deberían ser 'Tax'), se dice en el reporte en vez de cambiársela por la fuerza."""
     if not receta["account_type"]:
         return
     tipo = frappe.db.get_value("Account", cuenta, "account_type")
     if tipo != receta["account_type"]:
-        acciones.append(f"REVISAR: se va a usar '{cuenta}' como {receta['etiqueta']}, pero en ERPNext "
-                        f"es de tipo '{tipo or 'ninguno'}' y debería ser '{receta['account_type']}'")
+        avisos.append(f"REVISAR: se va a usar '{cuenta}' como {receta['etiqueta']}, pero en ERPNext "
+                      f"es de tipo '{tipo or 'ninguno'}' y debería ser '{receta['account_type']}'")
 
 
-def _avisar_si_no_es_del_root(cuenta, receta, acciones):
+def _avisar_si_no_es_del_root(cuenta, receta, avisos):
     """Lo mismo con el root_type. No se rechaza (el catálogo es de la empresa, no nuestro), pero una
     cuenta de gasto puesta donde va un activo tiene que saltar a la vista en el reporte."""
     root = frappe.db.get_value("Account", cuenta, "root_type")
     if root != receta["root_type"]:
-        acciones.append(f"REVISAR: se va a usar '{cuenta}' como {receta['etiqueta']}, pero es de "
-                        f"'{root or 'ninguno'}' y esta app la espera de '{receta['root_type']}'")
+        avisos.append(f"REVISAR: se va a usar '{cuenta}' como {receta['etiqueta']}, pero es de "
+                      f"'{root or 'ninguno'}' y esta app la espera de '{receta['root_type']}'")
 
 
 def _buscar_cuenta(company, receta):

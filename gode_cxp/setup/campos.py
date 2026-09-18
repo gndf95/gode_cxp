@@ -45,6 +45,11 @@ CAMPOS = {
     ],
     # Los datos que el archivo TEF de Banamex necesita de cada cuenta. La CLABE va en campo propio y
     # no en el `iban` estándar: ERPNext valida el IBAN con el algoritmo europeo y la CLABE no lo pasa.
+    # `bank_account_no` es el ÚLTIMO campo de la sección estándar `account_details_section` (después
+    # viene `address_and_contact`, otro Section Break), así que colgar `sec_tef` de él no esconde
+    # ningún campo de ERPNext detrás del `depends_on`. Si una versión futura mete campos nuevos ahí,
+    # hay que mover este `insert_after` al nuevo último campo (lo vigila
+    # test_produccion_pagos.test_las_secciones_nuevas_no_se_tragan_campos_estandar).
     "Bank Account": [
         {"fieldname": "sec_tef", "label": "Datos para TEF Banamex", "fieldtype": "Section Break", "insert_after": "bank_account_no",
          "depends_on": "eval:doc.party_type=='Supplier'"},
@@ -62,8 +67,13 @@ CAMPOS = {
     ],
     # El pago se crea al aplicar el resultado del banco: el lote, la autorización y la clave de
     # rastreo se escriben sobre el Payment Entry ya confirmado, de ahí el allow_on_submit.
+    # `sec_lote` va después de `clearance_date` y no después de `reference_date` a propósito: un
+    # Section Break se lleva consigo todos los campos que vengan después en el meta hasta el
+    # siguiente corte, y en Payment Entry v15 el orden es reference_date → clearance_date →
+    # accounting_dimensions_section. Colgada de reference_date, la sección (collapsible) se tragaba
+    # `clearance_date`, que es el campo con el que ERPNext concilia el pago en el estado de cuenta.
     "Payment Entry": [
-        {"fieldname": "sec_lote", "label": "Lote de pago Banamex", "fieldtype": "Section Break", "insert_after": "reference_date", "collapsible": 1},
+        {"fieldname": "sec_lote", "label": "Lote de pago Banamex", "fieldtype": "Section Break", "insert_after": "clearance_date", "collapsible": 1},
         {"fieldname": "lote_pago", "label": "Lote de pago", "fieldtype": "Link", "options": "Lote de Pago", "read_only": 1, "allow_on_submit": 1, "insert_after": "sec_lote", "in_standard_filter": 1},
         {"fieldname": "autorizacion_banco", "label": "Autorización del banco", "fieldtype": "Data", "allow_on_submit": 1, "insert_after": "lote_pago"},
         {"fieldname": "col_lote", "fieldtype": "Column Break", "insert_after": "autorizacion_banco"},

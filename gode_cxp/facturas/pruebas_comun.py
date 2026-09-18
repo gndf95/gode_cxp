@@ -19,10 +19,13 @@ def preparar_sitio_pruebas():
     Lo único que se agrega aparte es el modo de pruebas del correo."""
     if not frappe.db.exists("Company", EMPRESA):
         frappe.throw(f"No existe la empresa '{EMPRESA}': preparar_sitio_pruebas() solo corre en el sitio de pruebas.")
+    # El catálogo de pagos va PRIMERO: `Configuracion CxP.modo_pago_transferencia` trae
+    # 'Transferencia bancaria' como default, así que en un sitio nuevo el primer save del Single
+    # (el que hace configurar_empresa) fallaría con un Link a un modo de pago que no existe.
+    asegurar_catalogo_de_pagos()
     configurar_empresa(EMPRESA, ejemplos.RFC_EMPRESA, dry_run=False)
     if not frappe.db.get_single_value("Configuracion CxP", "modo_pruebas_correo"):
         frappe.db.set_single_value("Configuracion CxP", "modo_pruebas_correo", 1)
-    asegurar_catalogo_de_pagos()
     conf = frappe.get_doc("Configuracion CxP")
     return {campo: conf.get(campo) for campo in CUENTAS}
 
@@ -32,6 +35,12 @@ def asegurar_catalogo_de_pagos():
     cuenta contable de banco de detalle y el modo de pago de las transferencias. En producción las
     dos cosas existen de antes (la cuenta real del banco y el modo de pago del alta de ERPNext), así
     que esto es fixture de pruebas, no configuración de la app. Idempotente."""
+    # Red de seguridad, como en limpiar(): crea catálogo, nunca debe correr en producción. Aquí no
+    # sirve mirar Configuracion CxP.empresa (esto corre ANTES de que se llene), así que la guarda es
+    # la existencia de la empresa de pruebas, igual que en preparar_sitio_pruebas().
+    if not frappe.db.exists("Company", EMPRESA):
+        frappe.throw(f"asegurar_catalogo_de_pagos() solo corre en el sitio de pruebas "
+                     f"(no existe la empresa '{EMPRESA}').")
     hizo_falta = False
     if not frappe.db.exists("Mode of Payment", MODO_PAGO_TRANSFERENCIA):
         frappe.get_doc({"doctype": "Mode of Payment", "mode_of_payment": MODO_PAGO_TRANSFERENCIA,

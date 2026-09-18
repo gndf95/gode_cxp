@@ -33,7 +33,8 @@ function cxp_subir_cfdi(listview) {
 				urls.push(archivo.file_url);
 			}
 			clearTimeout(temporizador);
-			temporizador = setTimeout(() => cxp_procesar_carga(listview, urls), 500);
+			// splice: cada archivo se manda una sola vez, aunque una subida lenta dispare dos tandas.
+			temporizador = setTimeout(() => cxp_procesar_carga(listview, urls.splice(0)), 500);
 		},
 	});
 }

@@ -5,7 +5,8 @@ from gode_cxp.cfdi import ejemplos
 
 EMPRESA = "GODE PRUEBAS"
 RFCS_PRUEBA = ("AVI900101AB1", "AVI900101AB2", "HESB850101AB1")
-USUARIOS_PRUEBA = ("prueba.revisor@cxp.local", "prueba.tesoreria@cxp.local", "prueba.conta@cxp.local")
+USUARIOS_PRUEBA = ("prueba.revisor@cxp.local", "prueba.tesoreria@cxp.local", "prueba.conta@cxp.local",
+                   "prueba.sysadmin@cxp.local", "prueba.contable@cxp.local")
 
 
 def _cuenta(nombre, root_type, account_type=None):

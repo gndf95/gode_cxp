@@ -10,6 +10,9 @@ from gode_cxp.facturas.recepcion import procesar_xml
 from gode_cxp.setup import flujo, roles
 
 REVISOR, TESORERIA, CONTA = "prueba.revisor@cxp.local", "prueba.tesoreria@cxp.local", "prueba.conta@cxp.local"
+# SYSADMIN: administrador humano que NO es el usuario "Administrator". CONTABLE: alguien de
+# contabilidad ajeno a CxP, para comprobar que los Custom Role no le quitan los reportes estándar.
+SYSADMIN, CONTABLE = "prueba.sysadmin@cxp.local", "prueba.contable@cxp.local"
 
 # Cuando el rol no tiene la transición, apply_workflow no encuentra la acción y lanza
 # WorkflowTransitionError; el guardado posterior lanzaría WorkflowPermissionError. Las dos viven en
@@ -39,6 +42,7 @@ class TestFlujo(FrappeTestCase):
         pruebas_comun.limpiar()
         # limpiar() borra los usuarios de prueba, así que se recrean antes de cada prueba.
         usuario(REVISOR, "CxP Revisor"); usuario(TESORERIA, "CxP Tesoreria"); usuario(CONTA, "CxP Contabilidad")
+        usuario(SYSADMIN, "System Manager"); usuario(CONTABLE, "Accounts User")
         self.pi = frappe.get_doc("Purchase Invoice", crear_factura_desde_cfdi(procesar_xml(ejemplos.INGRESO_40, "SAT").name))
 
     def tearDown(self):
@@ -164,7 +168,7 @@ class TestFlujo(FrappeTestCase):
         por_estado = {}
         for fila in wf.states:
             por_estado.setdefault(fila.state, set()).add(fila.allow_edit)
-        for correo in (REVISOR, TESORERIA):
+        for correo in (REVISOR, TESORERIA, SYSADMIN):
             frappe.set_user(correo)
             try:
                 mis_roles = set(frappe.get_roles())
@@ -178,6 +182,18 @@ class TestFlujo(FrappeTestCase):
         for correo in (REVISOR, TESORERIA):
             self.assertIn(roles.EDITOR, {r.role for r in frappe.get_doc("User", correo).roles}, correo)
         self.assertNotIn(roles.EDITOR, {r.role for r in frappe.get_doc("User", CONTA).roles})
+
+    def test_los_system_manager_tambien_llevan_el_rol_editor(self):
+        """Un administrador humano (System Manager que no es 'Administrator') no hereda los roles
+        CxP: sin CxP Editor abriría la factura en solo lectura y no podría corregirla a mano."""
+        self.assertIn("System Manager", roles.ROLES_QUE_ESCRIBEN)
+        self.assertIn(roles.EDITOR, {r.role for r in frappe.get_doc("User", SYSADMIN).roles}, SYSADMIN)
+        # y el camino de la migración, para los administradores que ya existían
+        filtro = {"parenttype": "User", "parent": SYSADMIN, "role": roles.EDITOR}
+        frappe.db.delete("Has Role", filtro)
+        frappe.clear_cache(user=SYSADMIN)
+        roles.asegurar_rol_editor()
+        self.assertTrue(frappe.db.exists("Has Role", filtro))
 
     def test_asegurar_rol_editor_repara_a_los_usuarios_viejos(self):
         """Camino de la migración: los usuarios que ya existían antes de esta versión no pasaron por
@@ -215,6 +231,13 @@ class TestFlujo(FrappeTestCase):
         self.assertEqual(enmendada.estado_revision, "Recibida")
         self.assertFalse(enmendada.recepcion_confirmada)
         self.assertFalse(enmendada.nota_aclaracion)
+        # releída de la base, no el objeto en memoria: el sello de la recepción también se borra
+        guardada = frappe.get_doc("Purchase Invoice", enmendada.name)
+        self.assertFalse(guardada.recepcion_confirmada_por)
+        self.assertFalse(guardada.recepcion_confirmada_el)
+        # y el CFDI apunta a la enmienda, no a la factura cancelada
+        self.assertEqual(guardada.cfdi_recibido, self.pi.cfdi_recibido)
+        self.assertEqual(frappe.db.get_value("CFDI Recibido", guardada.cfdi_recibido, "factura"), guardada.name)
 
     # ---------------------------------------------------- permisos del espacio
 
@@ -228,6 +251,16 @@ class TestFlujo(FrappeTestCase):
                     self.assertTrue(frappe.get_doc("Report", reporte).is_permitted(), f"{correo} / {reporte}")
                 finally:
                     frappe.set_user("Administrator")
+
+    def test_el_custom_role_no_le_quita_los_reportes_a_accounts_user(self):
+        """Report.is_permitted() SUSTITUYE los roles del reporte por los del Custom Role, así que
+        asegurar_reportes guarda la unión: quien ya abría 'Accounts Payable' no lo puede perder."""
+        for reporte in roles.REPORTES:
+            frappe.set_user(CONTABLE)
+            try:
+                self.assertTrue(frappe.get_doc("Report", reporte).is_permitted(), f"{CONTABLE} / {reporte}")
+            finally:
+                frappe.set_user("Administrator")
 
     def test_tesoreria_lee_la_configuracion_cxp(self):
         frappe.set_user(TESORERIA)

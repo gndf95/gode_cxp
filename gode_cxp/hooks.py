@@ -17,5 +17,8 @@ doc_events = {
     "Purchase Invoice": {
         "validate": "gode_cxp.facturas.eventos.validar_factura",
         "before_submit": "gode_cxp.facturas.eventos.antes_de_enviar",
-    }
+    },
+    # Quien pueda escribir facturas necesita CxP Editor o el flujo le deja el formulario en solo
+    # lectura; se sella al guardar el usuario, no sólo al migrar.
+    "User": {"validate": "gode_cxp.setup.roles.sellar_rol_editor"},
 }

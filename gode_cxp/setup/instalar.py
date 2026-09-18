@@ -3,9 +3,16 @@ import frappe
 
 from gode_cxp.setup.campos import asegurar_campos
 from gode_cxp.setup.flujo import asegurar_flujo
-from gode_cxp.setup.roles import asegurar_perfil_modulos, asegurar_permisos
+from gode_cxp.setup.roles import (
+    EDITOR,
+    asegurar_perfil_modulos,
+    asegurar_permisos,
+    asegurar_reportes,
+    asegurar_rol_editor,
+)
 
-ROLES = ("CxP Revisor", "CxP Tesoreria", "CxP Contabilidad")
+# EDITOR no se le da a nadie a mano: lo reparte asegurar_rol_editor (ver setup/roles.py).
+ROLES = ("CxP Revisor", "CxP Tesoreria", "CxP Contabilidad", EDITOR)
 
 
 def asegurar_roles():
@@ -25,7 +32,9 @@ def asegurar_configuracion():
     asegurar_grupo_proveedores()
     asegurar_campos()
     asegurar_permisos()
+    asegurar_reportes()
     asegurar_flujo()
     asegurar_perfil_modulos()
+    asegurar_rol_editor()
     frappe.db.commit()
     frappe.clear_cache()

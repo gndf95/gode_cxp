@@ -1,12 +1,20 @@
 """Workflow de revisión de facturas de compra (idempotente: se reescribe en cada migración)."""
 import frappe
 
-NOMBRE = "Revision de facturas CxP"
-REV, TES = "CxP Revisor", "CxP Tesoreria"
+from gode_cxp.setup.roles import EDITOR, REV, TES
 
-ESTADOS = [  # (estado, doc_status, roles que lo pueden editar)
-    ("Recibida", "0", REV), ("En revisión", "0", REV), ("En aclaración", "0", REV), ("Revisada", "0", TES),
-    ("Aprobada", "1", TES), ("Rechazada", "0", TES), ("Error de lectura", "0", TES),
+NOMBRE = "Revision de facturas CxP"
+
+# PENDIENTE (Task 9): al activar el flujo, Workflow.update_default_workflow_status rellena
+# estado_revision en TODAS las facturas de compra que lo tengan vacío (los borradores quedan en
+# "Recibida" y las enviadas en "Aprobada"). En producción eso etiqueta facturas viejas sin CFDI como
+# "Aprobadas": hay que decidir qué hacer con ese estampado masivo antes de migrar rh.urenque.com.
+
+# (estado, doc_status). allow_edit es obligatorio y admite un solo rol por fila: todos los estados
+# usan EDITOR, que la app le da a revisores y a tesorería (ver setup/roles.py).
+ESTADOS = [
+    ("Recibida", "0"), ("En revisión", "0"), ("En aclaración", "0"), ("Revisada", "0"),
+    ("Aprobada", "1"), ("Rechazada", "0"), ("Error de lectura", "0"),
 ]
 TRANSICIONES = [  # (estado, acción, siguiente, rol, condición)
     ("Recibida", "Enviar a revisión", "En revisión", REV, ""),
@@ -25,7 +33,7 @@ TRANSICIONES = [  # (estado, acción, siguiente, rol, condición)
 
 
 def asegurar_flujo():
-    for estado, _, _ in ESTADOS:
+    for estado, _ in ESTADOS:
         if not frappe.db.exists("Workflow State", estado):
             frappe.get_doc({"doctype": "Workflow State", "workflow_state_name": estado, "style": ""}).insert(ignore_permissions=True)
     for _, accion, _, _, _ in TRANSICIONES:
@@ -42,8 +50,8 @@ def asegurar_flujo():
     wf.send_email_alert = 0
     wf.override_status = 0
     wf.set("states", [])
-    for estado, doc_status, rol in ESTADOS:
-        wf.append("states", {"state": estado, "doc_status": doc_status, "allow_edit": rol, "update_field": "", "update_value": ""})
+    for estado, doc_status in ESTADOS:
+        wf.append("states", {"state": estado, "doc_status": doc_status, "allow_edit": EDITOR, "update_field": "", "update_value": ""})
     wf.set("transitions", [])
     for estado, accion, siguiente, rol, condicion in TRANSICIONES:
         wf.append("transitions", {"state": estado, "action": accion, "next_state": siguiente, "allowed": rol,

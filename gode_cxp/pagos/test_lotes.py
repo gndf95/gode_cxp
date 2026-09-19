@@ -457,7 +457,7 @@ class TestLotes(FrappeTestCase):
             manual = self._lote_a_mano([(self.fa1.name, 100)], lote_origen=lote.name)
             manual.flags.reintento_interno = True
             with self.subTest(validar=validar.__name__):
-                with self.assertRaises(frappe.ValidationError):
+                with self.assertRaisesRegex(frappe.ValidationError, self.fa1.name):
                     validar(manual)
         nuevo = frappe.get_doc("Lote de Pago", nuevo_lote_pendientes(lote.name))
         self.assertEqual([f.factura for f in nuevo.facturas], [self.fa2.name])
@@ -508,9 +508,15 @@ class TestLotes(FrappeTestCase):
             segunda.commit()
             self.assertEqual(frappe.db.get_value("Purchase Invoice", self.fa1.name, "en_lote"), anterior)
             # Dos desenlaces válidos: la lectura con candado ve "OTRO", o MariaDB (snapshot isolation)
-            # rechaza el FOR UPDATE porque la fila cambió; en ambos el submit se aborta.
-            with self.assertRaisesRegex(frappe.ValidationError, "OTRO|Otra persona"):
+            # rechaza el FOR UPDATE porque la fila cambió; en ambos el submit se aborta. Se deja dicho
+            # cuál de los dos ocurrió, que es lo único que la prueba no puede fijar de antemano.
+            with self.assertRaises(frappe.ValidationError) as capturado:
                 lote.submit()
+            mensaje = str(capturado.exception)
+            rama = ("la lectura con candado vio el valor nuevo" if "OTRO" in mensaje
+                    else "MariaDB rechazó el FOR UPDATE (1020)" if "Otra persona" in mensaje else "")
+            print(f"\ntest_submit_ve_el_commit_de_una_segunda_conexion: {rama or mensaje}")
+            self.assertTrue(rama, mensaje)
             self.assertEqual(frappe.db.get_value("Lote de Pago", nombre, "docstatus"), 0)
         finally:
             # Suelta FOR UPDATE antes de restaurar desde la segunda conexión para no bloquearla.
@@ -566,10 +572,56 @@ class TestLotes(FrappeTestCase):
 
     def test_guardia_sin_documento_previo_falla_cerrada(self):
         lote = frappe.get_doc("Lote de Pago", self._lote_transmitido())
-        lote.flags.cambio_interno = True
         with patch.object(lote, "get_doc_before_save", return_value=None):
             with self.assertRaises(frappe.ValidationError):
                 validar_cambios_del_lote_enviado(lote)
+
+    def test_el_seen_de_frappe_no_dispara_la_guardia(self):
+        """Frappe escribe `_seen` él mismo en cada guardado (Document.reset_seen), así que si la
+        guardia lo mirara, guardar las notas de un lote enviado lanzaría sin que nadie tocara nada."""
+        lote = frappe.get_doc("Lote de Pago", self._lote_transmitido())
+        antes = frappe.get_doc("Lote de Pago", lote.name)
+        lote._seen = '["Administrator"]'
+        lote.notas = "acuse revisado"
+        with patch.object(lote, "get_doc_before_save", return_value=antes):
+            validar_cambios_del_lote_enviado(lote)
+
+    def _origen_parcial_con_reintento(self):
+        """Lote con dos transferencias (una Aplicado, otra Rechazado) y su lote de reintento ya
+        autorizado. Devuelve (origen, reintento)."""
+        origen = self._lote_con_dos_transferencias()
+        origen.transferencias[0].db_set("estado_pago", "Aplicado")
+        origen.transferencias[1].db_set("estado_pago", "Rechazado")
+        origen.db_set("estado_lote", "Parcial")
+        reintento = frappe.get_doc("Lote de Pago", nuevo_lote_pendientes(origen.name))
+        reintento.submit()
+        reintento.reload()
+        return origen, reintento
+
+    def test_cancelar_un_lote_de_reintento_devuelve_los_pendientes(self):
+        """Si al cancelar el reintento no se limpia `reintentado_en` del origen, lo que el banco no
+        pagó se queda varado: `nuevo_lote_pendientes` del origen devolvería None para siempre."""
+        origen, reintento = self._origen_parcial_con_reintento()
+        reintento.cancel()
+        self.assertFalse(frappe.db.get_value("Lote de Pago Transferencia",
+                                             origen.transferencias[1].name, "reintentado_en"))
+        otro = nuevo_lote_pendientes(origen.name)
+        self.assertTrue(otro, "tras cancelar el reintento el origen vuelve a tener pendientes")
+        self.assertEqual([f.factura for f in frappe.get_doc("Lote de Pago", otro).facturas],
+                         [self.fa2.name])
+
+    def test_la_enmienda_de_un_lote_de_reintento_cancelado_no_lanza(self):
+        """La enmienda nace sin `lote_origen` (lo limpia _nace_limpio), así que el chequeo de 'el
+        lote origen sólo lo pone nuevo_lote_pendientes' no le aplica."""
+        _origen, reintento = self._origen_parcial_con_reintento()
+        reintento.cancel()
+        reintento.reload()
+        enmienda = frappe.copy_doc(reintento)
+        enmienda.amended_from = reintento.name
+        enmienda.docstatus = 0
+        enmienda.insert()
+        self.assertFalse(enmienda.lote_origen)
+        self.assertEqual(enmienda.estado_lote, "Preparado")
 
     def test_notas_admiten_fechas_serializadas_del_navegador(self):
         lote = frappe.get_doc("Lote de Pago", self._lote_transmitido())

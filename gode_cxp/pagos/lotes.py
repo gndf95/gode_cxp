@@ -149,8 +149,13 @@ def generar_archivo(lote_name):
     except TefInvalido as e:
         frappe.throw(_("El archivo del banco no se pudo armar: {0}").format(e))
     nombre = nombre_archivo(getdate(lote.fecha_pago), secuencial, lote.naturaleza)
-    for viejo in frappe.get_all("File", filters={"attached_to_doctype": "Lote de Pago", "attached_to_name": lote.name},
-                                pluck="name"):
+    # Se borra SÓLO el archivo TEF anterior (el que apunta `archivo_tef` y cualquiera que ya lleve
+    # este mismo nombre): lo demás que Tesorería haya adjuntado al lote —el acuse de BancaNet, por
+    # ejemplo— no se toca, y sin esto Frappe guardaría el nuevo como "170926-0001-12(1).txt".
+    viejos = frappe.get_all("File", filters={"attached_to_doctype": "Lote de Pago", "attached_to_name": lote.name},
+                            or_filters=[["file_url", "=", lote.archivo_tef or ""], ["file_name", "=", nombre]],
+                            pluck="name")
+    for viejo in viejos:
         frappe.delete_doc("File", viejo, ignore_permissions=True, force=1)
     archivo = frappe.get_doc({"doctype": "File", "file_name": nombre, "content": datos, "is_private": 1,
                               "attached_to_doctype": "Lote de Pago", "attached_to_name": lote.name}).insert(ignore_permissions=True)

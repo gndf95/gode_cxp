@@ -1,8 +1,8 @@
 """Archivo TEF Banamex versión C (BancaNet Empresarial), ancho fijo, tomado byte a byte de los archivos
 aceptados por el banco el 17/09/2026. No importa frappe: se puede probar y usar fuera del sitio."""
 import re
-from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal
+from datetime import date, datetime
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 FIN = b"\r\n"
 L1, L2, L3, L4 = 124, 69, 217, 52
@@ -10,7 +10,12 @@ L1, L2, L3, L4 = 124, 69, 217, 52
 # ('DISTRIBUIDORA,DE ALIMENTOS P.B. SA DE CV/', línea 7 de PAGOS2.txt). Ojo: la validación de
 # pagos.cuentas_bancarias.validar_nombre_tef es más estricta y sí lo rechaza; aquí el criterio es
 # poder reconstruir los archivos reales byte a byte.
-PERMITIDOS = re.compile(r"^[A-Z0-9 ,./]*$")
+# Los dos juegos se usan con fullmatch y SIN "$": con "$" y re.match, "ABC/\n" pasaría (el "$" casa
+# antes del salto de línea final) y ese salto correría el archivo de ancho fijo completo.
+PERMITIDOS = re.compile(r"[A-Z0-9 ,./]*")
+# El concepto va como lo capturó Tesorería ("pago gode" es minúsculas en los archivos que el banco
+# aceptó), pero sigue siendo ASCII imprimible: ni control, ni tabuladores, ni saltos de línea.
+IMPRIMIBLE = re.compile(r"[ -~]*")
 
 
 class TefInvalido(ValueError):
@@ -18,32 +23,41 @@ class TefInvalido(ValueError):
 
 
 def _centavos(importe):
-    return int((Decimal(str(importe)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    try:
+        return int((Decimal(str(importe)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ArithmeticError, ValueError, TypeError):
+        raise TefInvalido(f"importe inválido: {importe!r}")
 
 
-def _num(valor, largo):
-    s = str(int(valor))
+def _num(valor, largo, campo=None):
+    try:
+        s = str(int(valor))
+    except (ValueError, TypeError):
+        raise TefInvalido(f"{campo or 'número'}: {valor!r} no es un número entero")
     if len(s) > largo:
         raise TefInvalido(f"{valor} no cabe en {largo} dígitos")
     return s.zfill(largo)
 
 
-def _txt(texto, largo, campo):
-    texto = texto or ""
+def _txt(texto, largo, campo, minusculas=False):
+    """Campo de texto de ancho fijo. `minusculas=True` es para los campos que llevan el concepto tal
+    como lo capturó Tesorería; el resto va en mayúsculas, dígitos, espacio, coma, punto y diagonal."""
+    texto = "" if texto is None else str(texto)
     if len(texto) > largo:
         raise TefInvalido(f"{campo}: '{texto}' pasa de {largo} caracteres")
-    if campo != "concepto" and not PERMITIDOS.match(texto):
-        raise TefInvalido(f"{campo}: '{texto}' tiene caracteres no permitidos (solo A-Z 0-9 , . / y espacio)")
-    try:
-        texto.encode("ascii")
-    except UnicodeEncodeError:
-        raise TefInvalido(f"{campo}: '{texto}' no es ASCII")
+    if not texto.isascii():
+        raise TefInvalido(f"{campo}: '{texto}' no es ASCII (el archivo del banco es ASCII puro)")
+    if not (IMPRIMIBLE if minusculas else PERMITIDOS).fullmatch(texto):
+        permitido = "ASCII imprimible" if minusculas else "solo A-Z 0-9 , . / y espacio"
+        raise TefInvalido(f"{campo}: {texto!r} tiene caracteres no permitidos ({permitido})")
     return texto.ljust(largo)
 
 
 def _ddmmaa(fecha):
     if isinstance(fecha, datetime):
         fecha = fecha.date()
+    if not isinstance(fecha, date):
+        raise TefInvalido(f"fecha inválida: {fecha!r} (se espera una fecha, no texto)")
     return fecha.strftime("%d%m%y")
 
 
@@ -56,7 +70,17 @@ def _validar_lote(lote):
         raise TefInvalido("naturaleza debe ser 06 o 12")
     if not lote.get("transferencias"):
         raise TefInvalido("el lote no tiene transferencias")
-    if not (1 <= int(lote.get("secuencial", 0)) <= 9999):
+    # Los datos que faltan se cachan aquí y no a media construcción del archivo: quien llama sólo
+    # tiene que atrapar TefInvalido, nunca un KeyError ni un decimal.InvalidOperation.
+    for campo in ("fecha", "empresa", "concepto"):
+        if not lote.get(campo):
+            raise TefInvalido(f"falta {campo} en el lote")
+    _ddmmaa(lote["fecha"])
+    try:
+        secuencial = int(lote.get("secuencial") or 0)
+    except (ValueError, TypeError):
+        raise TefInvalido(f"secuencial inválido: {lote.get('secuencial')!r}")
+    if not 1 <= secuencial <= 9999:
         raise TefInvalido("secuencial fuera de rango (1-9999)")
     if not re.fullmatch(r"\d{1,12}", str(lote.get("contrato", ""))):
         raise TefInvalido("contrato inválido")
@@ -65,6 +89,8 @@ def _validar_lote(lote):
     if not re.fullmatch(r"\d{7}", str(lote.get("referencia_numerica", ""))):
         raise TefInvalido("referencia numérica debe tener 7 dígitos")
     for t in lote["transferencias"]:
+        if not str(t.get("beneficiario") or "").strip():
+            raise TefInvalido("una transferencia del lote no trae beneficiario")
         if _centavos(t.get("importe", 0)) <= 0:
             raise TefInvalido(f"importe inválido para {t.get('beneficiario')}")
         if lote["naturaleza"] == "12" and not re.fullmatch(r"\d{18}", str(t.get("clabe", ""))):
@@ -87,8 +113,11 @@ def _registro_3(lote, t):
         cuenta_20 = "00" + t["clabe"]
         referencia, instrucciones = concepto, ""
         clave_banco, ref_num = "0" + t["clabe"][:3], lote["referencia_numerica"]
-    linea = ("3" + "0" + "001" + _num(_centavos(t["importe"]), 18) + "01" + cuenta_20 + _txt(referencia, 40, "concepto")
-             + _txt(t["beneficiario"], 55, "beneficiario") + _txt(instrucciones, 40, "concepto") + " " * 24 + clave_banco + ref_num + "00")
+    # referencia e instrucciones llevan el concepto tal cual (minúsculas incluidas) o la fecha; por
+    # eso van con minusculas=True, y con su propio nombre para que el mensaje de error se entienda.
+    linea = ("3" + "0" + "001" + _num(_centavos(t["importe"]), 18, "importe") + "01" + cuenta_20
+             + _txt(referencia, 40, "referencia", minusculas=True) + _txt(t["beneficiario"], 55, "beneficiario")
+             + _txt(instrucciones, 40, "instrucciones", minusculas=True) + " " * 24 + clave_banco + ref_num + "00")
     if len(linea) != L3:
         raise TefInvalido(f"registro 3 mide {len(linea)}, esperaba {L3}")
     return linea
@@ -98,11 +127,13 @@ def generar_tef(lote):
     """bytes del archivo listo para BancaNet (ASCII, CRLF en todas las líneas)."""
     _validar_lote(lote)
     total = sum(_centavos(t["importe"]) for t in lote["transferencias"])
-    r1 = ("1" + _num(lote["contrato"], 12) + _ddmmaa(lote["fecha"]) + _num(lote["secuencial"], 4) + _txt(lote["empresa"], 36, "empresa")
-          + _txt(lote["concepto"], 20, "concepto") + lote["naturaleza"] + " " * 40 + "C00")
-    r2 = "2" + "1" + "001" + _num(total, 18) + "01" + lote["sucursal_cargo"] + _num(lote["cuenta_cargo"], 20) + " " * 20
+    r1 = ("1" + _num(lote["contrato"], 12, "contrato") + _ddmmaa(lote["fecha"]) + _num(lote["secuencial"], 4, "secuencial")
+          + _txt(lote["empresa"], 36, "empresa") + _txt(lote["concepto"], 20, "concepto", minusculas=True)
+          + lote["naturaleza"] + " " * 40 + "C00")
+    r2 = ("2" + "1" + "001" + _num(total, 18, "total") + "01" + lote["sucursal_cargo"]
+          + _num(lote["cuenta_cargo"], 20, "cuenta de cargo") + " " * 20)
     r3 = [_registro_3(lote, t) for t in lote["transferencias"]]
-    r4 = "4" + "001" + _num(len(r3), 6) + _num(total, 18) + "000001" + _num(total, 18)
+    r4 = "4" + "001" + _num(len(r3), 6) + _num(total, 18, "total") + "000001" + _num(total, 18, "total")
     for linea, largo in ((r1, L1), (r2, L2), (r4, L4)):
         if len(linea) != largo:
             raise TefInvalido(f"registro {linea[0]} mide {len(linea)}, esperaba {largo}")
@@ -121,6 +152,11 @@ def leer_tef(datos):
     if len(texto) < 4 or texto[0][:1] != "1" or texto[1][:1] != "2" or texto[-1][:1] != "4":
         raise TefInvalido("estructura inesperada: se esperan registros 1, 2, 3… y 4")
     r1, r2, r4, r3s = texto[0], texto[1], texto[-1], texto[2:-1]
+    # Entre el registro 2 y el 4 sólo van transferencias: cualquier otra cosa (dos archivos pegados,
+    # un registro 2 repetido) se leería como una transferencia con basura en todos los campos.
+    for i, l in enumerate(r3s, start=3):
+        if l[:1] != "3":
+            raise TefInvalido(f"la línea {i} debería ser un registro 3 y empieza con {l[:1]!r}")
     for linea, largo in ((r1, L1), (r2, L2), (r4, L4), *[(l, L3) for l in r3s]):
         if len(linea) != largo:
             raise TefInvalido(f"registro {linea[:1]} mide {len(linea)}, esperaba {largo}")

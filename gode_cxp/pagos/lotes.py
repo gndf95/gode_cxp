@@ -21,6 +21,23 @@ REINTENTABLES = ("Parcial", "Rechazado")
 AUTORIZACION_BANCO = re.compile(r"\d{1,12}")
 
 
+def _sql_con_candado(query, valores=None, **kw):
+    """`frappe.db.sql` de una consulta con FOR UPDATE, con el error 1020 de MariaDB traducido.
+
+    MariaDB 11.8 trae innodb_snapshot_isolation: si otra sesión cambió y confirmó una de las filas
+    que se quieren bloquear después de que empezó esta transacción, el FOR UPDATE no entrega el dato
+    viejo ni el nuevo: falla con 1020 "Record has changed since last read" (que Frappe presenta como
+    `QueryDeadlockError`). Es el candado funcionando, así que el mensaje es el mismo desde cualquiera
+    de las consultas con candado del módulo y la operación entera se deshace."""
+    try:
+        return frappe.db.sql(query, valores, **kw)
+    except frappe.QueryDeadlockError:
+        frappe.throw(_("Otra persona acaba de modificar alguna de estas facturas o alguno de los "
+                       "lotes del día mientras trabajabas. No se hizo nada: vuelve a abrir el lote "
+                       "e inténtalo de nuevo."),
+                     title=_("Modificado por otra sesión"))
+
+
 def bloquear_facturas(nombres) -> dict[str, dict]:
     """Candado de fila (SELECT … FOR UPDATE) sobre las facturas que va a apartar un lote.
 
@@ -31,19 +48,10 @@ def bloquear_facturas(nombres) -> dict[str, dict]:
     nombres = sorted({n for n in nombres if n})   # ordenados: dos sesiones no se abrazan
     if not nombres:
         return {}
-    try:
-        filas = frappe.db.sql("""select name, en_lote, outstanding_amount, docstatus, on_hold,
+    filas = _sql_con_candado("""select name, en_lote, outstanding_amount, docstatus, on_hold,
                                        estado_revision, currency, company, supplier
                                 from `tabPurchase Invoice` where name in %s order by name for update""",
-                              (nombres,), as_dict=True)
-    except frappe.QueryDeadlockError:
-        # MariaDB 11.8 trae innodb_snapshot_isolation: si otra sesión cambió y confirmó una de estas
-        # facturas después de que empezó esta transacción, el FOR UPDATE no entrega el dato viejo ni el
-        # nuevo: falla con 1020 "Record has changed since last read". Es el candado funcionando; se le
-        # dice a la persona qué pasó y la operación entera se deshace.
-        frappe.throw(_("Otra persona acaba de modificar alguna de estas facturas mientras trabajabas. "
-                       "No se hizo nada: vuelve a abrir el lote e inténtalo de nuevo."),
-                     title=_("Facturas modificadas por otra sesión"))
+                             (nombres,), as_dict=True)
     return {fila.name: fila for fila in filas}
 
 
@@ -189,8 +197,8 @@ def _siguiente_secuencial(fecha_pago):
     secuencial ya generó su archivo y pudo subirse a BancaNet, así que volver a repartir ese número
     mandaría dos archivos distintos con el mismo identificador de lote.
     FOR UPDATE: dos usuarios generando a la vez el mismo día no deben tomar el mismo número."""
-    fila = frappe.db.sql("""select max(secuencial) from `tabLote de Pago`
-                            where fecha_pago = %s for update""", (fecha_pago,))
+    fila = _sql_con_candado("""select max(secuencial) from `tabLote de Pago`
+                               where fecha_pago = %s for update""", (fecha_pago,))
     siguiente = int(fila[0][0] or 0) + 1
     if siguiente > MAX_SECUENCIAL:
         frappe.throw(_("La fecha de pago {0} ya usó los {1} lotes que admite el banco (0001 a {2}): "

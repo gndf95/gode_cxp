@@ -10,15 +10,17 @@ from frappe import _
 from frappe.utils import cstr, flt, get_datetime
 
 from gode_cxp.pagos.cuentas_bancarias import REGISTRADA, SIN_PREREGISTRO, validar_nombre_tef
-from gode_cxp.pagos.lotes import ACTIVOS, REINTENTABLES, bloquear_facturas
+from gode_cxp.pagos.lotes import ACTIVOS, REINTENTABLES, _sql_con_candado, bloquear_facturas
 from gode_cxp.pagos.preregistro import exigir_preregistro
 
 
 CAMPOS_DE_ARCHIVO = ("secuencial", "nombre_archivo", "archivo_tef", "generado_el", "transmitido_el",
                      "autorizacion_banco")
 CAMPOS_DE_PAGO = ("linea_tef", "pago", "clave_rastreo", "motivo_rechazo", "reintentado_en")
-# Sólo las notas y la auditoría de Frappe pueden cambiar al guardar un lote enviado.
-EDITABLES = {"notas", "modified", "modified_by", "_user_tags", "_comments", "_assign", "_liked_by"}
+# Sólo las notas y la auditoría de Frappe pueden cambiar al guardar un lote enviado. `_seen` entra
+# porque Frappe lo escribe él mismo en cada guardado (Document.reset_seen), no la persona.
+EDITABLES = {"notas", "modified", "modified_by", "_user_tags", "_comments", "_assign", "_liked_by",
+             "_seen"}
 # Estados desde los que sí se cancela: el archivo puede estar generado, pero no se subió al banco.
 CANCELABLES = ("Autorizado", "Exportado")
 
@@ -96,22 +98,45 @@ def _facturas_reintentables(lote_origen, este_lote) -> set[str]:
     if not lote_origen:
         return set()
     # Una lectura actual incluye tanto el resultado del banco como el destino del reintento.
-    filas = frappe.db.sql("""select lf.factura from `tabLote de Pago Factura` lf
+    filas = _sql_con_candado("""select lf.factura from `tabLote de Pago Factura` lf
                             join `tabLote de Pago Transferencia` lt
                               on lf.parent = lt.parent and lf.transferencia = lt.idx
                             join `tabLote de Pago` l on l.name = lf.parent
                             where lf.parent = %s and l.estado_lote in %s
                               and lt.estado_pago in ('Pendiente', 'Rechazado', 'Devuelto')
                               and (coalesce(lt.reintentado_en, '') = '' or lt.reintentado_en = %s)
+                            order by lf.factura
                             for update""", (lote_origen, REINTENTABLES, este_lote or ""))
     return {fila[0] for fila in filas}
 
 
+def _facturas_en_otro_lote_activo(doc) -> dict[str, str]:
+    """factura -> nombre del otro lote vivo que ya la tiene, en UNA sola consulta con candado.
+
+    Los borradores aún no escriben `en_lote`, así que el único rastro es la tabla hija. El join lee
+    con candado para ver lotes recién confirmados y no el snapshot anterior de REPEATABLE READ; una
+    consulta por factura multiplicaba por N el riesgo de que MariaDB rechace el FOR UPDATE."""
+    nombres = sorted({f.factura for f in doc.facturas if f.factura})
+    if not nombres:
+        return {}
+    filas = _sql_con_candado("""select lf.factura, lf.parent from `tabLote de Pago Factura` lf
+                                join `tabLote de Pago` l on l.name = lf.parent
+                                where lf.factura in %s and lf.parent != %s and l.estado_lote in %s
+                                order by lf.factura, lf.parent for update""",
+                             (nombres, doc.name or "", ACTIVOS))
+    otros = {}
+    for factura, otro in filas:
+        otros.setdefault(factura, otro)
+    return otros
+
+
 def validar_lote(doc, method=None):
     if doc.is_new():
+        # Primero la limpieza y después el chequeo: una enmienda nace SIN `lote_origen` (lo limpia
+        # _nace_limpio), así que al revés no había manera de enmendar un lote de reintento cancelado.
+        _nace_limpio(doc)
         if doc.lote_origen and not doc.flags.reintento_interno:
             frappe.throw(_("El lote origen sólo se asigna desde Nuevo lote con los pendientes."))
-        _nace_limpio(doc)
     elif cstr(doc.lote_origen) != cstr(frappe.db.get_value("Lote de Pago", doc.name, "lote_origen")):
         frappe.throw(_("El lote origen no se modifica a mano."))
     if doc.naturaleza not in ("06", "12"):
@@ -121,6 +146,7 @@ def validar_lote(doc, method=None):
     # FOR UPDATE devuelve la versión actual; get_value volvería al snapshot de REPEATABLE READ.
     facturas = bloquear_facturas([f.factura for f in doc.facturas])
     reintentables = _facturas_reintentables(doc.lote_origen, doc.name)
+    en_otro_lote = _facturas_en_otro_lote_activo(doc)
     idx_validos = {t.idx for t in doc.transferencias}
     suma_por_transferencia = {}
     suma_por_factura = {}
@@ -143,14 +169,8 @@ def validar_lote(doc, method=None):
                          .format(f.factura, suma_por_factura[f.factura], pi.outstanding_amount))
         if pi.en_lote and pi.en_lote != doc.name and not (pi.en_lote == doc.lote_origen and f.factura in reintentables):
             frappe.throw(_("La factura {0} ya está en el lote {1}.").format(f.factura, pi.en_lote))
-        # Los borradores aún no escriben en_lote. El join lee con candado para ver lotes
-        # recién confirmados y no el snapshot anterior de REPEATABLE READ.
-        otro = frappe.db.sql("""select lf.parent from `tabLote de Pago Factura` lf
-                                join `tabLote de Pago` l on l.name = lf.parent
-                                where lf.factura = %s and lf.parent != %s and l.estado_lote in %s for update""",
-                             (f.factura, doc.name or "", ACTIVOS))
-        if otro:
-            frappe.throw(_("La factura {0} ya está en el lote {1}.").format(f.factura, otro[0][0]))
+        if f.factura in en_otro_lote:
+            frappe.throw(_("La factura {0} ya está en el lote {1}.").format(f.factura, en_otro_lote[f.factura]))
         if frappe.db.get_value("Supplier", pi.supplier, "bloqueado_pagos"):
             frappe.throw(_("El proveedor {0} está bloqueado para pagos.").format(pi.supplier))
         suma_por_transferencia[f.transferencia] = suma_por_transferencia.get(f.transferencia, 0) + flt(f.importe)
@@ -218,6 +238,17 @@ def al_cancelar(doc, method=None):
     for f in doc.facturas:
         if frappe.db.get_value("Purchase Invoice", f.factura, "en_lote") == doc.name:
             frappe.db.set_value("Purchase Invoice", f.factura, "en_lote", None)
+    # Cancelar un lote de REINTENTO devuelve sus transferencias a la fila de pendientes del origen:
+    # sin esto `reintentado_en` se queda apuntando a un lote cancelado y `nuevo_lote_pendientes` del
+    # origen devuelve None para siempre, o sea que lo que el banco no pagó se queda varado. Además
+    # ese enlace, en un lote origen enviado, impediría cancelar este lote (check_no_back_links_exist
+    # corre DESPUÉS de on_cancel, así que aquí llegamos a tiempo).
+    if doc.lote_origen:
+        filas = frappe.db.sql("""select name from `tabLote de Pago Transferencia`
+                                 where parent = %s and parenttype = 'Lote de Pago'
+                                   and reintentado_en = %s""", (doc.lote_origen, doc.name))
+        for (fila,) in filas:
+            frappe.db.set_value("Lote de Pago Transferencia", fila, "reintentado_en", None)
 
 
 def antes_de_borrar(doc, method=None):

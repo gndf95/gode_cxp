@@ -1,5 +1,6 @@
 import frappe
 from frappe.tests.utils import FrappeTestCase
+from frappe.utils import now_datetime
 
 from gode_cxp.facturas import pruebas_comun
 from gode_cxp.facturas.proveedores import proveedor_por_rfc
@@ -190,6 +191,48 @@ class TestCuentaBancaria(FrappeTestCase):
         frappe.db.set_value("Bank Account", c.name, "verificada_por", otro, update_modified=False)
         verificar_cuenta(c.name)
         self.assertEqual(frappe.db.get_value("Bank Account", c.name, "verificada_por"), otro)
+
+    def test_una_cuenta_nueva_nace_sin_dar_de_alta_en_el_banco(self):
+        """El alta en BancaNet la mueven la descarga del pre-registro y la carga de la respuesta
+        (pagos/preregistro.py). Quien crea la cuenta no puede declararla registrada en el mismo
+        insert: el candado del lote toma 'Registrada' como permiso para mandarle dinero."""
+        c = self._cuenta(clabe=CLABE_OTRO, estado_preregistro="Registrada",
+                         preregistro_respuesta="0000 ALTA APLICADA", preregistro_enviado_el=now_datetime())
+        self.assertEqual(c.estado_preregistro, "Sin registrar")
+        self.assertFalse(c.preregistro_respuesta)
+        self.assertFalse(c.preregistro_enviado_el)
+
+    def test_el_alta_en_el_banco_no_se_cambia_con_un_save(self):
+        """Igual que `verificada`: los tres campos son read_only en pantalla, pero eso no frena un
+        save() por API ni por consola. Ni Administrator puede declarar registrada una cuenta a mano;
+        el camino es `marcar_registrada`, que escribe con set_value y deja constancia de quién fue."""
+        c = self._cuenta(clabe=CLABE_OTRO)
+        c.estado_preregistro = "Registrada"
+        with self.assertRaises(frappe.ValidationError) as ctx:
+            c.save(ignore_permissions=True)
+        self.assertIn("BancaNet", str(ctx.exception))
+        for campo, valor in (("preregistro_respuesta", "0000 ALTA APLICADA"),
+                             ("preregistro_enviado_el", now_datetime())):
+            c.reload()
+            c.set(campo, valor)
+            with self.assertRaises(frappe.ValidationError):
+                c.save(ignore_permissions=True)
+        c.reload()
+        self.assertEqual(c.estado_preregistro, "Sin registrar")
+        self.assertFalse(c.preregistro_respuesta)
+
+    def test_guardar_la_cuenta_no_borra_el_alta_que_dio_el_banco(self):
+        """Lo que escribe el pre-registro va con frappe.db.set_value y no pasa por validate: guardar
+        la cuenta después, sin tocar nada de lo que viaja al banco, tiene que dejarlo en su lugar."""
+        c = self._cuenta(clabe=CLABE_OTRO)
+        frappe.db.set_value("Bank Account", c.name, {"estado_preregistro": "Registrada",
+                                                     "preregistro_respuesta": "0000 ALTA APLICADA"})
+        c.reload()
+        c.importe_maximo_banco = 12345
+        c.save(ignore_permissions=True)
+        c.reload()
+        self.assertEqual(c.estado_preregistro, "Registrada")
+        self.assertEqual(c.preregistro_respuesta, "0000 ALTA APLICADA")
 
     def test_no_se_verifica_la_cuenta_de_un_proveedor_bloqueado(self):
         c = self._cuenta(clabe=CLABE_OTRO)

@@ -7,9 +7,13 @@
 frappe.listview_settings["Purchase Invoice"] = frappe.listview_settings["Purchase Invoice"] || {};
 const cxp_ajustes_pi = frappe.listview_settings["Purchase Invoice"];
 const cxp_onload_previo = cxp_ajustes_pi.onload;
+// `company` tiene que venir en las filas de la lista: la acción saca de ahí la empresa del lote y
+// sin el campo `d.company` llega undefined (la lista sólo trae las columnas que pide add_fields).
+cxp_ajustes_pi.add_fields = (cxp_ajustes_pi.add_fields || []).concat(["company"]);
 
 cxp_ajustes_pi.onload = function (listview) {
-	if (cxp_onload_previo) cxp_onload_previo(listview);
+	// .call(this): el onload de ERPNext se escribió como método de listview_settings y usa `this`.
+	if (cxp_onload_previo) cxp_onload_previo.call(cxp_ajustes_pi, listview);
 	if (!(frappe.user_roles.includes("CxP Tesoreria") || frappe.user_roles.includes("System Manager"))) return;
 	listview.page.add_action_item(__("Crear lote de pago"), () => {
 		const filas = listview.get_checked_items();

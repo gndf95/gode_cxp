@@ -86,14 +86,42 @@ def _cuenta_del_proveedor(proveedor):
     return cuenta
 
 
+def _partidas_normalizadas(partidas):
+    """Desarma y revisa la forma de `partidas` = [{"factura": name, "importe": número}].
+
+    El diálogo del escritorio manda texto JSON y una llamada a la API puede mandar cualquier cosa.
+    Sin esta revisión, una forma inesperada salía como JSONDecodeError, KeyError o TypeError, o sea
+    un error 500 sin explicación en vez de un mensaje que diga qué falta."""
+    if isinstance(partidas, str):
+        try:
+            partidas = frappe.parse_json(partidas)
+        except (ValueError, TypeError):
+            frappe.throw(_("Las facturas a pagar no llegaron en un JSON válido."))
+    if not partidas:
+        frappe.throw(_("No se eligió ninguna factura."))
+    if not isinstance(partidas, list):
+        frappe.throw(_("Las facturas a pagar deben venir en una lista de partidas con factura e importe."))
+    limpias = []
+    for p in partidas:
+        if not isinstance(p, dict) or not p.get("factura"):
+            frappe.throw(_("Cada partida del lote necesita la factura que se paga (llegó '{0}').").format(p))
+        if p.get("importe") in (None, ""):
+            frappe.throw(_("Falta el importe a pagar de la factura {0}.").format(p["factura"]))
+        # flt() nunca revienta: convierte lo que no es número en 0, así que el número malo se
+        # reconoce aquí y no se confunde con "el saldo no alcanza" en la validación del lote.
+        importe = flt(p["importe"])
+        if importe <= 0:
+            frappe.throw(_("El importe a pagar de la factura {0} tiene que ser un número mayor que "
+                           "cero (llegó '{1}').").format(p["factura"], p["importe"]))
+        limpias.append({"factura": p["factura"], "importe": importe})
+    return limpias
+
+
 def crear_lotes(company, fecha_pago, partidas):
     """partidas = [{"factura": name, "importe": float}]. Devuelve los nombres de los lotes creados
     (uno por naturaleza, porque un archivo del banco no mezcla 06 con 12)."""
     conf = _conf()
-    if isinstance(partidas, str):
-        partidas = frappe.parse_json(partidas)
-    if not partidas:
-        frappe.throw(_("No se eligió ninguna factura."))
+    partidas = _partidas_normalizadas(partidas)
     # La cuenta de cargo sale de la configuración, que es un Single para todo el sitio: si apunta a
     # una cuenta de otra empresa, el archivo cargaría el dinero a la cuenta equivocada.
     if frappe.db.get_value("Bank Account", conf.cuenta_bancaria_empresa, "company") != company:

@@ -21,8 +21,18 @@ frappe.ui.form.on("Lote de Pago", {
 
 		if (["Autorizado", "Exportado"].includes(frm.doc.estado_lote)) {
 			frm.add_custom_button(__("Generar archivo TEF"), () => {
-				llamar("gode_cxp.pagos.api.generar_archivo", { lote: frm.doc.name },
-					(r) => { if (r.message) window.open(r.message.file_url); });
+				// El enlace va en un msgprint y no en window.open: la descarga se decide dentro de
+				// un callback asíncrono y el navegador bloquea la ventana emergente, así que el
+				// primer clic parecería no hacer nada. Aquí el clic lo da la persona.
+				llamar("gode_cxp.pagos.api.generar_archivo", { lote: frm.doc.name }, (r) => {
+					if (!r.message) return;
+					const nombre = frappe.utils.escape_html(r.message.nombre_archivo);
+					frappe.msgprint({
+						title: __("Archivo del banco listo"),
+						indicator: "green",
+						message: `<a href="${encodeURI(r.message.file_url)}" download>${nombre}</a>`,
+					});
+				});
 			}, __("Banco"));
 		}
 		if (frm.doc.estado_lote === "Exportado") {

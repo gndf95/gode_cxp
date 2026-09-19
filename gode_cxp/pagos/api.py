@@ -16,10 +16,24 @@ def _exigir(*roles):
                      frappe.PermissionError)
 
 
+def _exigir_el_lote(lote):
+    """Además del rol, el permiso de escritura SOBRE EL DOCUMENTO.
+
+    El rol es global; las User Permissions (por empresa, por ejemplo) sólo se aplican mirando el
+    documento, y eso lo hace `check_permission`. Sin esto, quien tuviera el rol de Tesorería podía
+    generar y transmitir el archivo de un lote de una empresa que no le toca."""
+    frappe.get_doc("Lote de Pago", lote).check_permission("write")
+
+
 @frappe.whitelist()
 def facturas_pagables(company, proveedor=None, hasta_vencimiento=None):
     """Consultar qué se puede pagar también le sirve a quien revisa y a contabilidad."""
     _exigir("CxP Tesoreria", "CxP Revisor", "CxP Contabilidad", "System Manager")
+    # `lotes.facturas_pagables` consulta con `frappe.get_all`, que va con `ignore_permissions=True`:
+    # el permiso de las facturas y de la empresa hay que pedirlo aquí o la consulta se salta las
+    # User Permissions y devuelve las facturas de una empresa que el usuario no puede ver.
+    frappe.has_permission("Purchase Invoice", "read", throw=True)
+    frappe.has_permission("Company", "read", doc=company, throw=True)
     return lotes.facturas_pagables(company, proveedor, hasta_vencimiento)
 
 
@@ -33,12 +47,14 @@ def crear_lotes(company, fecha_pago, partidas):
 @frappe.whitelist()
 def generar_archivo(lote):
     _exigir("CxP Tesoreria", "System Manager")
+    _exigir_el_lote(lote)
     return lotes.generar_archivo(lote)
 
 
 @frappe.whitelist()
 def marcar_transmitido(lote, autorizacion):
     _exigir("CxP Tesoreria", "System Manager")
+    _exigir_el_lote(lote)
     lotes.marcar_transmitido(lote, autorizacion)
     return lote
 
@@ -46,4 +62,5 @@ def marcar_transmitido(lote, autorizacion):
 @frappe.whitelist()
 def nuevo_lote_pendientes(lote):
     _exigir("CxP Tesoreria", "System Manager")
+    _exigir_el_lote(lote)
     return lotes.nuevo_lote_pendientes(lote)

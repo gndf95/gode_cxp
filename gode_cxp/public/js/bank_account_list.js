@@ -54,13 +54,17 @@ cxp_ajustes_ba.onload = function (listview) {
 						d.hide();
 						listview.refresh();
 						if (!r.message) return;
-						const sin = r.message.sin_coincidencia || [];
+						// Cada renglón que no se aplicó trae los últimos 4 dígitos de la cuenta (el
+						// número completo no sale del servidor) y el motivo por el que no se aplicó.
+						const sin = (r.message.sin_coincidencia || []).map((s) => `…${s.cuenta}: ${s.motivo}`);
 						frappe.msgprint({
 							title: __("Respuesta aplicada"),
 							indicator: sin.length || r.message.rechazadas ? "orange" : "green",
 							message: `<p>${__("Registradas: {0} · Rechazadas: {1}", [r.message.registradas, r.message.rechazadas])}</p>`
 								+ (sin.length
-									? `<p>${__("Sin cuenta que coincida: {0}", [frappe.utils.escape_html(sin.join(", "))])}</p>`
+									? `<p>${__("Renglones que no se aplicaron:")}</p><ul><li>`
+										+ sin.map((s) => frappe.utils.escape_html(s)).join("</li><li>")
+										+ "</li></ul>"
 									: ""),
 						});
 					},

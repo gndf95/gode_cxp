@@ -25,6 +25,9 @@ ROLES_VERIFICAN = ("CxP Tesoreria", "System Manager")
 # (transliterar) y al revés sería una importación circular.
 ESTADOS_PREREGISTRO = ("Sin registrar", "Enviada al banco", "Registrada", "Rechazada")
 SIN_PREREGISTRO, ENVIADA_AL_BANCO, REGISTRADA, RECHAZADA = ESTADOS_PREREGISTRO
+# Los tres campos que escribe el alta en BancaNet. Los mueve pagos/preregistro.py y SIEMPRE con
+# frappe.db.set_value, que no pasa por validate: por eso un save() normal no tiene por qué tocarlos.
+CAMPOS_PREREGISTRO = ("estado_preregistro", "preregistro_enviado_el", "preregistro_respuesta")
 
 
 def validar_clabe(clabe):
@@ -49,6 +52,13 @@ def transliterar(texto):
     s = "".join(c for c in s if not unicodedata.combining(c)).upper().replace(".", "")
     s = "".join(c if PERMITIDOS_TEF.fullmatch(c) else " " for c in s)
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _texto(valor):
+    """Un valor de campo listo para comparar el antes con el después. Se compara como texto porque un
+    Datetime llega como `datetime` desde la base y como cadena desde el escritorio, y eso no es un
+    cambio; 19 caracteres son 'AAAA-MM-DD HH:MM:SS', que es lo que guarda la base."""
+    return str(valor or "")[:19]
 
 
 def _parte(texto):
@@ -132,15 +142,33 @@ def validar_cuenta_bancaria(doc, method=None):
     error = validar_nombre_tef(doc.nombre_tef)
     if error:
         frappe.throw(_("Beneficiario para el TEF: {0}.").format(error))
-    # Una cuenta nueva (o una de antes de que existiera el campo) arranca sin dar de alta en el banco.
-    doc.estado_preregistro = doc.estado_preregistro or SIN_PREREGISTRO
     antes = doc.get_doc_before_save()
+    if not antes:
+        # Una cuenta nueva nace sin dar de alta en el banco, diga lo que diga quien la crea: el
+        # candado del lote lee "Registrada" como permiso para mandarle dinero a ese proveedor.
+        doc.estado_preregistro = SIN_PREREGISTRO
+        doc.preregistro_enviado_el = doc.preregistro_respuesta = None
+    elif not (antes.estado_preregistro or doc.estado_preregistro):
+        # Cuenta de antes de que el campo existiera (la migración las rellena, pero una que se cree
+        # en medio no): entra a "Sin registrar" y eso no cuenta como cambiarlo a mano.
+        doc.estado_preregistro = SIN_PREREGISTRO
     if antes and any((antes.get(c) or "") != (doc.get(c) or "") for c in CAMPOS_AL_BANCO):
         # Cambió algo que va al banco: Tesorería tiene que volver a verificar…
         doc.verificada, doc.verificada_por, doc.verificada_el = 0, None, None
         # …y el alta que BancaNet autorizó ya no es de esta cuenta, así que hay que pedirla otra vez.
+        # Ésta es la ÚNICA transición del alta que se hace desde aquí.
         doc.estado_preregistro = SIN_PREREGISTRO
         doc.preregistro_enviado_el = doc.preregistro_respuesta = None
+    elif antes:
+        # Candado del servidor, igual que el de `verificada`: los tres campos del alta son read_only
+        # en pantalla, pero eso no frena un save() por API ni por consola. Quien da de alta de verdad
+        # (pagos/preregistro.py) escribe con frappe.db.set_value y no pasa por aquí, así que si estos
+        # campos cambiaron en un save() es que alguien los movió a mano.
+        cambiados = [c for c in CAMPOS_PREREGISTRO if _texto(antes.get(c)) != _texto(doc.get(c))]
+        if cambiados:
+            frappe.throw(_("El alta de la cuenta en BancaNet no se cambia a mano ({0}): usa las "
+                           "acciones del pre-registro en la lista de cuentas bancarias.")
+                         .format(", ".join(cambiados)))
     # Candado del servidor: `verificada` es read_only en pantalla, pero eso no frena un save() por
     # API ni por consola. Pasar de 0 a 1 a mano solo lo puede Tesorería. El camino normal,
     # verificar_cuenta(), escribe con db_set y por eso no pasa por aquí (y además marca el flag).

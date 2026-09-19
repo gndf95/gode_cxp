@@ -26,6 +26,16 @@ def _exigir_el_lote(lote):
     frappe.get_doc("Lote de Pago", lote).check_permission("write")
 
 
+def _exigir_las_cuentas(nombres):
+    """Lo mismo que `_exigir_el_lote`, pero sobre CADA cuenta bancaria que la operación va a tocar.
+
+    Dar de alta una cuenta en el banco es lo que habilita a ese proveedor para cobrar, así que el rol
+    (que es global) no alcanza: las User Permissions por empresa o por proveedor sólo se aplican
+    mirando el documento."""
+    for name in nombres:
+        frappe.get_doc("Bank Account", name).check_permission("write")
+
+
 @frappe.whitelist()
 def facturas_pagables(company, proveedor=None, hasta_vencimiento=None):
     """Consultar qué se puede pagar también le sirve a quien revisa y a contabilidad."""
@@ -74,16 +84,25 @@ def nuevo_lote_pendientes(lote):
 @frappe.whitelist()
 def descargar_preregistro(cuentas=None):
     _exigir("CxP Tesoreria", "System Manager")
-    return preregistro.descargar_preregistro(cuentas)
+    # Las cuentas se resuelven antes de generar el archivo para poder pedir el permiso de cada una.
+    nombres = preregistro.nombres_por_registrar(cuentas)
+    _exigir_las_cuentas(nombres)
+    return preregistro.descargar_preregistro(nombres)
 
 
 @frappe.whitelist()
 def aplicar_respuesta_preregistro(file_url):
     _exigir("CxP Tesoreria", "System Manager")
-    return preregistro.aplicar_respuesta_preregistro(file_url)
+    # De qué cuentas habla el archivo sólo se sabe después de cruzarlo, y el cruce no escribe nada:
+    # el permiso se pide en medio, antes de mover un solo estado.
+    cruce = preregistro.cruzar_respuesta(file_url)
+    _exigir_las_cuentas(sorted({par["cuenta"] for par in cruce if par["cuenta"]}))
+    return preregistro.aplicar_cruce(cruce)
 
 
 @frappe.whitelist()
 def marcar_registrada(cuentas):
     _exigir("CxP Tesoreria", "System Manager")
-    return preregistro.marcar_registrada(cuentas)
+    nombres = preregistro.lista_de_cuentas(cuentas)
+    _exigir_las_cuentas(nombres or [])
+    return preregistro.marcar_registrada(nombres)

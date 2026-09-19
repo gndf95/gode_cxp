@@ -20,6 +20,9 @@ TESORERIA, REVISOR = "prueba.tesoreria@cxp.local", "prueba.revisor@cxp.local"
 # Alguien de contabilidad ajeno a CxP: ni siquiera puede consultar qué se puede pagar.
 AJENO = "prueba.contable@cxp.local"
 CLABE_12 = "072180007090045065"
+# Un valor que el usuario SÍ puede ver, distinto del que la prueba va a tocar: es lo que convierte
+# una User Permission en una negación para todo lo demás.
+AJENA = "EMPRESA AJENA"
 
 
 class TestApiPagos(FrappeTestCase):
@@ -44,6 +47,61 @@ class TestApiPagos(FrappeTestCase):
 
     def _partidas(self, importe=100):
         return json.dumps([{"factura": self.fa.name, "importe": importe}])
+
+    def _solo_ve(self, doctype, valor):
+        """Le deja al usuario de Tesorería un único documento permitido de `doctype`, o sea le niega
+        todos los demás. Es la forma real de ejercitar las User Permissions por empresa sin dar de
+        alta otro catálogo de cuentas en el sitio de pruebas.
+
+        `ignore_links`: a User Permission no le importa que `valor` exista (sólo guarda la lista de
+        valores permitidos) y aquí lo que se quiere es justamente que NO sea el de la prueba."""
+        up = frappe.get_doc({"doctype": "User Permission", "user": TESORERIA, "allow": doctype,
+                             "for_value": valor})
+        up.flags.ignore_links = True
+        up.insert(ignore_permissions=True)
+        # LIFO: primero se borra la User Permission y después se limpia la caché del usuario.
+        self.addCleanup(frappe.clear_cache, user=TESORERIA)
+        self.addCleanup(frappe.delete_doc, "User Permission", up.name, force=1, ignore_permissions=True)
+        frappe.clear_cache(user=TESORERIA)
+
+    def test_el_permiso_sobre_el_lote_tambien_cuenta(self):
+        """El rol no alcanza: si las User Permissions de la empresa le niegan el lote a quien llama,
+        los tres botones que mueven dinero tienen que negarse igual. `_exigir` sólo mira el rol, que
+        es global; el permiso por documento es lo que separa una empresa de otra."""
+        (lote,) = api.crear_lotes(pruebas_comun.EMPRESA, str(date.today()), self._partidas())
+        frappe.get_doc("Lote de Pago", lote).submit()
+        api.generar_archivo(lote)                 # queda Exportado: sin el candado, marcar_transmitido pasaría
+        self._solo_ve("Lote de Pago", "LOTE-QUE-NO-ES-ESTE")
+        frappe.set_user(TESORERIA)
+        for llamada in (lambda: api.generar_archivo(lote),
+                        lambda: api.marcar_transmitido(lote, "119938"),
+                        lambda: api.nuevo_lote_pendientes(lote)):
+            with self.assertRaises(frappe.PermissionError):
+                llamada()
+        self.assertEqual(frappe.db.get_value("Lote de Pago", lote, "estado_lote"), "Exportado")
+
+    def test_facturas_pagables_exige_permiso_de_la_empresa(self):
+        """Consultar qué se puede pagar es una consulta de facturas de una empresa: si el usuario no
+        tiene permitida esa empresa, no puede verlas. `lotes.facturas_pagables` usa `frappe.get_all`,
+        que va con `ignore_permissions=True`, así que el candado tiene que estar en la API."""
+        frappe.set_user(TESORERIA)
+        self.assertEqual([f["name"] for f in api.facturas_pagables(pruebas_comun.EMPRESA)], [self.fa.name])
+        frappe.set_user("Administrator")
+        self._solo_ve("Company", AJENA)
+        frappe.set_user(TESORERIA)
+        with self.assertRaises(frappe.PermissionError):
+            api.facturas_pagables(pruebas_comun.EMPRESA)
+
+    def test_administrator_pasa_los_candados(self):
+        """'Administrator' no tiene filas en Has Role, pero `frappe.get_roles` le devuelve todos los
+        roles del sitio: los candados de la API no pueden dejar fuera al administrador (es quien
+        corre las migraciones y quien arregla un lote a mano)."""
+        api._exigir("CxP Tesoreria")           # no lanza
+        self.assertEqual([f["name"] for f in api.facturas_pagables(pruebas_comun.EMPRESA)], [self.fa.name])
+        (lote,) = api.crear_lotes(pruebas_comun.EMPRESA, str(date.today()), self._partidas())
+        frappe.get_doc("Lote de Pago", lote).submit()
+        self.assertTrue(api.generar_archivo(lote)["file_url"])
+        self.assertEqual(api.marcar_transmitido(lote, "119938"), lote)
 
     def test_revisor_consulta_pero_no_crea(self):
         frappe.set_user(REVISOR)

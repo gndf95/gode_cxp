@@ -186,10 +186,17 @@ def limpiar():
             _borrar(dt, name)
     for name in proveedores:
         frappe.delete_doc("Supplier", name, force=1, ignore_permissions=True)
+    # Las User Permissions de los usuarios de prueba se borran ANTES que los usuarios: `force=1`
+    # ignora los Link, así que un User borrado dejaría su User Permission huérfana y viva, y la
+    # siguiente prueba que recreara ese usuario empezaría con permisos por documento que no pidió.
+    for name in frappe.get_all("User Permission", filters={"user": ["in", USUARIOS_PRUEBA]}, pluck="name"):
+        frappe.delete_doc("User Permission", name, force=1, ignore_permissions=True)
     # Los usuarios de prueba no deben quedar vivos en el sitio; test_flujo los vuelve a crear.
     for correo in USUARIOS_PRUEBA:
         if frappe.db.exists("User", correo):
             frappe.delete_doc("User", correo, force=1, ignore_permissions=True, delete_permanently=True)
+    for correo in USUARIOS_PRUEBA:
+        frappe.clear_cache(user=correo)
     # Las pruebas de la bandeja suben XML, ZIP y PDF sueltos (File sin adjuntar). Los que la carga
     # no borra (un archivo ajeno, uno que falló) se quedarían acumulándose en el sitio de pruebas.
     for name in frappe.get_all("File", filters={"attached_to_doctype": ["is", "not set"], "is_folder": 0},

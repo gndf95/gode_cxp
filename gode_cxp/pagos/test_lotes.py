@@ -120,6 +120,21 @@ class TestLotes(FrappeTestCase):
         with self.assertRaises(frappe.ValidationError):   # factura no aprobada
             crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": borrador.name, "importe": 100}])
 
+    def test_crear_lotes_valida_la_forma_de_las_partidas(self):
+        """`partidas` llega del diálogo del escritorio como texto JSON y por la API como lo que sea.
+        Una forma inesperada tiene que salir como un mensaje en español, no como un KeyError o un
+        TypeError (que en una petición web es un error 500 sin explicación)."""
+        for malas in ("no es json",                                   # texto que no es JSON
+                      '{"factura": "X"}',                             # JSON pero un dict, no una lista
+                      "[]",                                           # lista vacía
+                      ["no es un dict"],
+                      [{"factura": self.fa1.name}],                   # sin importe
+                      [{"importe": 100}],                             # sin factura
+                      [{"factura": self.fa1.name, "importe": "mucho"}],
+                      [{"factura": self.fa1.name, "importe": None}]):
+            with self.assertRaises(frappe.ValidationError):
+                crear_lotes(pruebas_comun.EMPRESA, FECHA, malas)
+
     def test_la_misma_factura_dos_veces_no_se_paga_doble(self):
         """El candado más importante: dos partidas (o dos filas) de la misma factura sumaban sin que
         nadie comparara el total contra el saldo, así que el proveedor cobraba dos veces."""

@@ -507,7 +507,9 @@ class TestLotes(FrappeTestCase):
                 cursor.execute("update `tabPurchase Invoice` set en_lote='OTRO' where name=%s", (self.fa1.name,))
             segunda.commit()
             self.assertEqual(frappe.db.get_value("Purchase Invoice", self.fa1.name, "en_lote"), anterior)
-            with self.assertRaisesRegex(frappe.ValidationError, "OTRO"):
+            # Dos desenlaces válidos: la lectura con candado ve "OTRO", o MariaDB (snapshot isolation)
+            # rechaza el FOR UPDATE porque la fila cambió; en ambos el submit se aborta.
+            with self.assertRaisesRegex(frappe.ValidationError, "OTRO|Otra persona"):
                 lote.submit()
             self.assertEqual(frappe.db.get_value("Lote de Pago", nombre, "docstatus"), 0)
         finally:

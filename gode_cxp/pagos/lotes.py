@@ -41,8 +41,8 @@ def bloquear_facturas(nombres) -> dict[str, dict]:
         # facturas después de que empezó esta transacción, el FOR UPDATE no entrega el dato viejo ni el
         # nuevo: falla con 1020 "Record has changed since last read". Es el candado funcionando; se le
         # dice a la persona qué pasó y la operación entera se deshace.
-        frappe.throw(_("Otra persona acaba de modificar alguna de estas facturas (OTRO proceso las cambió mientras "
-                       "trabajabas). No se hizo nada: vuelve a abrir el lote e inténtalo de nuevo."),
+        frappe.throw(_("Otra persona acaba de modificar alguna de estas facturas mientras trabajabas. "
+                       "No se hizo nada: vuelve a abrir el lote e inténtalo de nuevo."),
                      title=_("Facturas modificadas por otra sesión"))
     return {fila.name: fila for fila in filas}
 

@@ -332,6 +332,19 @@ class TestAplicar(FrappeTestCase):
                     aplicar_resultado(r.name)
         self.assertEqual(frappe.db.count("Payment Entry", {"lote_pago": self.lote12.name}), 0)
 
+    def test_archivo_rechazado_completo_cierra_el_lote_como_rechazado(self):
+        """El banco rechazó el archivo entero (32) y todas las líneas vienen en 5: aplicar no crea pagos,
+        pero sí registra los rechazos; sin eso el lote se quedaría Transmitido y sin reintento posible."""
+        r = self._resultado(self.lote12, {1: "5"})
+        r.estatus_archivo = "32"
+        r.save()
+        if r.estado == "Con diferencias":
+            api.marcar_revisado(r.name)
+        out = aplicar_resultado(r.name)
+        self.assertEqual((out["creados"], out["rechazados"]), ([], 1))
+        self.assertEqual(frappe.db.get_value("Lote de Pago", self.lote12.name, "estado_lote"), "Rechazado")
+        self.assertEqual(frappe.db.count("Payment Entry", {"lote_pago": self.lote12.name}), 0)
+
     def test_crear_pago_exige_asignaciones_exactas(self):
         for importes in ([], [100], [1161], [1000, 159]):
             with self.subTest(importes=importes):

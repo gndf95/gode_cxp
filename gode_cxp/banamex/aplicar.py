@@ -328,8 +328,8 @@ def _liberar_facturas_con_saldo(lote, transferencia=None):
             continue
         # El UPDATE condicional comprueba el dueño actual, incluso con un snapshot anterior.
         frappe.db.sql("""update `tabPurchase Invoice` set en_lote = NULL
-                         where name = %s and en_lote = %s and outstanding_amount > 0""",
-                      (f.factura, lote.name))
+                         where name = %s and en_lote = %s and outstanding_amount > %s""",
+                      (f.factura, lote.name, TOLERANCIA))
 
 
 def recalcular_estado_lote(lote_name):
@@ -399,8 +399,11 @@ def aplicar_resultado(resultado_name):
     if r.estatus_archivo in (RECHAZADO, CANCELADO):
         diferencias = [_("el archivo está rechazado/cancelado por el banco pero la línea {0} viene "
                          "como aplicada").format(m.linea) for m in r.movimientos if m.estatus == "3"]
-        frappe.throw("\n".join(diferencias) or _("El archivo está rechazado/cancelado por el banco: "
-                                                "no se pueden crear pagos."))
+        # Solo se frena lo contradictorio (archivo rechazado con líneas "aplicadas"). Si todas las
+        # líneas vienen rechazadas, el resultado SÍ se aplica: no crea pagos, marca las transferencias
+        # Rechazado y deja el lote en Rechazado, que es lo que permite armar el lote de reintento.
+        if diferencias:
+            frappe.throw("<br>".join(diferencias), title=_("El archivo no se pagó"))
     if r.estado not in ("Importado", "Revisado", "Con diferencias"):
         frappe.throw(_("Solo se aplica un resultado Importado, Revisado o Con diferencias; está en '{0}'.")
                      .format(r.estado))

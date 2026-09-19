@@ -29,6 +29,9 @@ doc_events = {
     # reglas van en doc_events para que también corran si alguien guarda el lote desde el formulario.
     "Lote de Pago": {
         "validate": "gode_cxp.pagos.eventos.validar_lote",
+        # Guardar un lote ya enviado NO dispara `validate` (Frappe sólo corre
+        # `before_update_after_submit`), y ahí es donde va la guardia de los campos de dinero.
+        "before_update_after_submit": "gode_cxp.pagos.eventos.validar_cambios_del_lote_enviado",
         "on_submit": "gode_cxp.pagos.eventos.al_autorizar",
         "before_cancel": "gode_cxp.pagos.eventos.antes_de_cancelar",
         "on_cancel": "gode_cxp.pagos.eventos.al_cancelar",

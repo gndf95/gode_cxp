@@ -4,6 +4,8 @@ Un lote es una sola naturaleza (06 Banamex→Banamex, 12 interbancario) y una so
 proveedor y cuenta bancaria; cada transferencia cubre una o varias facturas. Generar o transmitir un
 lote NO mueve saldos ni crea pagos: eso pasa sólo al aplicar el resultado del banco (Task 7).
 """
+import re
+
 import frappe
 from frappe import _
 from frappe.utils import flt, getdate, now_datetime, today
@@ -13,6 +15,22 @@ from gode_cxp.pagos.tef import MAX_SECUENCIAL, TefInvalido, generar_tef, nombre_
 # Estados en los que un lote todavía "aparta" sus facturas: mientras el lote esté en uno de ellos,
 # ninguna de sus facturas puede entrar a otro lote.
 ACTIVOS = ("Preparado", "Autorizado", "Exportado", "Transmitido")
+# Estados desde los que un lote se puede reintentar: el banco ya contestó y algo no se pagó.
+REINTENTABLES = ("Parcial", "Rechazado")
+# El acuse que da BancaNet al recibir el archivo. Se va tal cual al reporte para COI.
+AUTORIZACION_BANCO = re.compile(r"\d{1,12}")
+
+
+def bloquear_facturas(nombres):
+    """Candado de fila (SELECT … FOR UPDATE) sobre las facturas que va a apartar un lote.
+
+    Sin él, dos sesiones armando lotes a la vez pasan las dos validaciones y acaban con la misma
+    factura en dos lotes autorizados: el archivo TEF se genera dos veces y el proveedor cobra dos
+    veces. El candado se toma ANTES de volver a leer `en_lote` y los lotes activos, y MariaDB lo
+    sostiene hasta el commit de la transacción."""
+    nombres = sorted({n for n in nombres if n})   # ordenados: dos sesiones no se abrazan
+    if nombres:
+        frappe.db.sql("select name from `tabPurchase Invoice` where name in %s for update", (nombres,))
 
 
 def _conf():
@@ -41,9 +59,13 @@ def facturas_pagables(company, proveedor=None, hasta_vencimiento=None):
     facturas = frappe.get_all("Purchase Invoice", filters=filtros, order_by="due_date, name",
                               fields=["name", "supplier", "supplier_name", "bill_no", "bill_date", "due_date",
                                       "outstanding_amount", "cfdi_uuid"])
-    # Un lote Preparado (borrador) todavía no escribe en_lote: sus facturas se excluyen por la tabla hija.
-    en_borrador = set(frappe.get_all("Lote de Pago Factura", filters={"parenttype": "Lote de Pago", "docstatus": 0},
-                                     pluck="factura"))
+    # Un lote Preparado (borrador) todavía no escribe en_lote: sus facturas se excluyen por la tabla
+    # hija. El join con el padre es por la `company`: el borrador de otra empresa del sitio no puede
+    # desaparecer facturas de esta.
+    en_borrador = {fila[0] for fila in frappe.db.sql("""select lf.factura from `tabLote de Pago Factura` lf
+                                                        join `tabLote de Pago` l on l.name = lf.parent
+                                                        where lf.parenttype = 'Lote de Pago'
+                                                          and l.docstatus = 0 and l.company = %s""", (company,))}
     bloqueados = set(frappe.get_all("Supplier", filters={"bloqueado_pagos": 1}, pluck="name"))
     return [f for f in facturas if f.name not in en_borrador and f.supplier not in bloqueados]
 
@@ -72,6 +94,11 @@ def crear_lotes(company, fecha_pago, partidas):
         partidas = frappe.parse_json(partidas)
     if not partidas:
         frappe.throw(_("No se eligió ninguna factura."))
+    # La cuenta de cargo sale de la configuración, que es un Single para todo el sitio: si apunta a
+    # una cuenta de otra empresa, el archivo cargaría el dinero a la cuenta equivocada.
+    if frappe.db.get_value("Bank Account", conf.cuenta_bancaria_empresa, "company") != company:
+        frappe.throw(_("La cuenta de cargo {0} de Configuración CxP no es de {1}: corrige la "
+                       "configuración antes de armar lotes.").format(conf.cuenta_bancaria_empresa, company))
     fecha_pago = getdate(fecha_pago)
     por_transferencia = {}   # (proveedor, cuenta) -> {"cuenta": dict, "facturas": [...]}
     vistas = set()
@@ -148,6 +175,17 @@ def _lote_como_dict(lote, conf):
             "referencia_numerica": lote.referencia_numerica, "transferencias": transferencias}
 
 
+def _filtros_del_tef_anterior(archivo_tef, nombre):
+    """Los `or_filters` que reconocen al archivo TEF que hay que reemplazar.
+
+    El filtro por `file_url` sólo se pone si el lote ya tiene archivo: preguntar por `file_url = ""`
+    casaría con cualquier adjunto del lote sin URL y generar_archivo se lo llevaría."""
+    filtros = [["file_name", "=", nombre]]
+    if archivo_tef:
+        filtros.append(["file_url", "=", archivo_tef])
+    return filtros
+
+
 def generar_archivo(lote_name):
     """Arma el archivo TEF del lote autorizado, lo adjunta y lo deja en Exportado.
 
@@ -170,8 +208,7 @@ def generar_archivo(lote_name):
     # este mismo nombre): lo demás que Tesorería haya adjuntado al lote —el acuse de BancaNet, por
     # ejemplo— no se toca, y sin esto Frappe guardaría el nuevo como "170926-0001-12(1).txt".
     viejos = frappe.get_all("File", filters={"attached_to_doctype": "Lote de Pago", "attached_to_name": lote.name},
-                            or_filters=[["file_url", "=", lote.archivo_tef or ""], ["file_name", "=", nombre]],
-                            pluck="name")
+                            or_filters=_filtros_del_tef_anterior(lote.archivo_tef, nombre), pluck="name")
     for viejo in viejos:
         frappe.delete_doc("File", viejo, ignore_permissions=True, force=1)
     archivo = frappe.get_doc({"doctype": "File", "file_name": nombre, "content": datos, "is_private": 1,
@@ -191,6 +228,11 @@ def marcar_transmitido(lote_name, autorizacion):
     autorizacion = str(autorizacion or "").strip()
     if not autorizacion:
         frappe.throw(_("Captura la autorización que dio BancaNet."))
+    # El acuse es un número y se va tal cual al reporte para COI: si se acepta cualquier texto, el
+    # lote queda Transmitido con basura y nadie puede rastrear el envío en el banco.
+    if not AUTORIZACION_BANCO.fullmatch(autorizacion):
+        frappe.throw(_("La autorización de BancaNet es un número de 1 a 12 dígitos; '{0}' no lo es.")
+                     .format(autorizacion))
     lote.db_set({"autorizacion_banco": autorizacion, "transmitido_el": now_datetime(), "estado_lote": "Transmitido"})
 
 
@@ -200,29 +242,43 @@ def nuevo_lote_pendientes(lote_name):
     Devuelve None si no quedaba nada por reintentar. El lote viejo NO se cancela: es el historial de
     lo que se mandó al banco."""
     lote = frappe.get_doc("Lote de Pago", lote_name)
-    if lote.estado_lote not in ("Parcial", "Rechazado"):
+    if lote.estado_lote not in REINTENTABLES:
         frappe.throw(_("Solo se reintenta un lote Parcial o Rechazado."))
     pendientes = [t for t in lote.transferencias
                   if t.estado_pago in ("Pendiente", "Rechazado", "Devuelto") and not t.reintentado_en]
     if not pendientes:
         return None
     conf = _conf()
-    nuevo = frappe.new_doc("Lote de Pago")
-    nuevo.update({"company": lote.company, "fecha_pago": today(), "naturaleza": lote.naturaleza,
-                  "concepto": lote.concepto, "referencia_numerica": _referencia_numerica(conf, today()),
-                  "cuenta_bancaria_empresa": lote.cuenta_bancaria_empresa, "lote_origen": lote.name})
-    for idx, t in enumerate(pendientes, start=1):
-        nuevo.append("transferencias", {"proveedor": t.proveedor, "cuenta_bancaria": t.cuenta_bancaria,
-                                        "beneficiario_tef": t.beneficiario_tef, "cuenta_tef": t.cuenta_tef,
-                                        "importe": t.importe})
-        for f in lote.facturas:
-            if f.transferencia == t.idx:
-                nuevo.append("facturas", {"transferencia": idx, "proveedor": f.proveedor, "factura": f.factura,
-                                          "folio": f.folio, "uuid": f.uuid, "importe": f.importe,
-                                          "saldo_al_crear": frappe.db.get_value("Purchase Invoice", f.factura, "outstanding_amount")})
-                # Se libera la factura del lote viejo para que validar_lote no la vea "en otro lote".
-                frappe.db.set_value("Purchase Invoice", f.factura, "en_lote", None)
-    nuevo.insert()
-    for t in pendientes:
-        t.db_set("reintentado_en", nuevo.name)
+    # El lote nuevo se arma e inserta PRIMERO y las facturas se liberan DESPUÉS: al revés, un fallo
+    # dejaba facturas sin `en_lote` con el lote viejo fuera de ACTIVOS, o sea otra vez pagables sin
+    # que nadie las hubiera reintentado. `validar_lote` las acepta aunque sigan apuntando al lote
+    # origen porque ese lote está en Parcial/Rechazado. Todo va en un savepoint: si algo truena, ni
+    # el lote nuevo ni las facturas quedan a medias, tanto en una petición web como desde bench.
+    frappe.db.savepoint("gode_cxp_reintento")
+    try:
+        nuevo = frappe.new_doc("Lote de Pago")
+        nuevo.update({"company": lote.company, "fecha_pago": today(), "naturaleza": lote.naturaleza,
+                      "concepto": lote.concepto, "referencia_numerica": _referencia_numerica(conf, today()),
+                      "cuenta_bancaria_empresa": lote.cuenta_bancaria_empresa, "lote_origen": lote.name})
+        a_liberar = []
+        for idx, t in enumerate(pendientes, start=1):
+            nuevo.append("transferencias", {"proveedor": t.proveedor, "cuenta_bancaria": t.cuenta_bancaria,
+                                            "beneficiario_tef": t.beneficiario_tef, "cuenta_tef": t.cuenta_tef,
+                                            "importe": t.importe})
+            for f in lote.facturas:
+                if f.transferencia == t.idx:
+                    nuevo.append("facturas", {"transferencia": idx, "proveedor": f.proveedor, "factura": f.factura,
+                                              "folio": f.folio, "uuid": f.uuid, "importe": f.importe,
+                                              "saldo_al_crear": frappe.db.get_value("Purchase Invoice", f.factura, "outstanding_amount")})
+                    a_liberar.append(f.factura)
+        nuevo.insert()
+        for factura in a_liberar:
+            if frappe.db.get_value("Purchase Invoice", factura, "en_lote") == lote.name:
+                frappe.db.set_value("Purchase Invoice", factura, "en_lote", None)
+        for t in pendientes:
+            t.db_set("reintentado_en", nuevo.name)
+    except Exception:
+        frappe.db.rollback(save_point="gode_cxp_reintento")
+        raise
+    frappe.db.release_savepoint("gode_cxp_reintento")
     return nuevo.name

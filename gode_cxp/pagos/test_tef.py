@@ -73,6 +73,37 @@ class TestGenerador(unittest.TestCase):
             with self.assertRaises(TefInvalido):
                 generar_tef(malo)
 
+    def test_rechaza_caracteres_de_control(self):
+        """Un salto de línea o un tabulador dentro de un campo corre el archivo de ancho fijo
+        completo: el banco lo rechazaría. Ningún campo los admite, tampoco el concepto (que sí puede
+        ir en minúsculas)."""
+        for concepto in ("pago\r\nx", "pago\tgode", "pago\x00gode", "pago gode\x7f"):
+            with self.assertRaises(TefInvalido):
+                generar_tef(dict(LOTE_12, concepto=concepto))
+        with self.assertRaises(TefInvalido):
+            generar_tef(dict(LOTE_12, empresa="GODE\r\nX"))
+        with self.assertRaises(TefInvalido):
+            generar_tef(dict(LOTE_12, transferencias=[dict(LOTE_12["transferencias"][0], beneficiario="ABC,DEF/\n")]))
+
+    def test_el_concepto_admite_minusculas_pero_no_acentos(self):
+        self.assertIn(b"pago gode", generar_tef(LOTE_12))
+        with self.assertRaises(TefInvalido):
+            generar_tef(dict(LOTE_12, concepto="pagó gode"))
+
+    def test_entrada_incompleta_es_tef_invalido(self):
+        """Nada de KeyError ni de decimal.InvalidOperation saliendo del módulo: quien llama sólo
+        tiene que atrapar TefInvalido."""
+        malos = [dict(LOTE_12, fecha=None), dict(LOTE_12, empresa=None), dict(LOTE_12, concepto=None),
+                 dict(LOTE_12, fecha="2026-09-17"),
+                 dict(LOTE_12, transferencias=[dict(LOTE_12["transferencias"][0], importe=None)]),
+                 dict(LOTE_12, transferencias=[dict(LOTE_12["transferencias"][0], beneficiario=None)]),
+                 dict(LOTE_12, cuenta_cargo=None), dict(LOTE_12, contrato=None), dict(LOTE_12, secuencial=None)]
+        for campo in ("fecha", "empresa", "concepto", "transferencias", "naturaleza"):
+            malos.append({k: v for k, v in LOTE_12.items() if k != campo})
+        for malo in malos:
+            with self.assertRaises(TefInvalido):
+                generar_tef(malo)
+
     def test_ida_y_vuelta(self):
         for lote in (LOTE_06, LOTE_12):
             leido = leer_tef(generar_tef(lote))
@@ -86,6 +117,28 @@ class TestGenerador(unittest.TestCase):
     def test_lector_rechaza_largo_malo(self):
         with self.assertRaises(TefInvalido):
             leer_tef(generar_tef(LOTE_12).replace(b"C00\r\n", b"C0\r\n", 1))
+
+    def test_lector_exige_que_lo_de_en_medio_sean_registros_3(self):
+        """Entre el registro 2 y el 4 sólo van transferencias: una línea de otro tipo (o dos archivos
+        pegados) se leería como una transferencia con basura en todos los campos."""
+        lineas = generar_tef(LOTE_12).split(b"\r\n")     # [r1, r2, r3, r3, r4, b""]
+        for i in (2, 3):
+            malas = list(lineas)
+            malas[i] = b"9" + malas[i][1:]
+            with self.assertRaises(TefInvalido):
+                leer_tef(b"\r\n".join(malas))
+
+    def test_el_mensaje_nombra_el_campo(self):
+        """Es lo que lee Tesorería cuando un lote no sale: el mensaje tiene que decir qué campo."""
+        with self.assertRaises(TefInvalido) as ctx:
+            generar_tef(dict(LOTE_12, transferencias=[dict(LOTE_12["transferencias"][0], beneficiario="A" * 56)]))
+        self.assertIn("beneficiario", str(ctx.exception))
+        with self.assertRaises(TefInvalido) as ctx:
+            generar_tef(dict(LOTE_12, concepto="x" * 21))
+        self.assertIn("concepto", str(ctx.exception))
+        with self.assertRaises(TefInvalido) as ctx:
+            generar_tef(dict(LOTE_12, empresa="G" * 37))
+        self.assertIn("empresa", str(ctx.exception))
 
 
 @unittest.skipUnless(os.path.isdir(MUESTRAS), "sin archivos de muestra del banco")

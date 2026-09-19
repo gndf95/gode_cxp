@@ -178,6 +178,10 @@ def _limpiar():
     if frappe.db.exists("DocType", "Resultado Bancario"):
         for name in frappe.get_all("Resultado Bancario", pluck="name"):
             _borrar("Resultado Bancario", name)
+    # Un lote de reintento apunta a su origen (lote_origen) y el origen a su reintento (reintentado_en):
+    # esos enlaces cruzados impiden cancelar cualquiera de los dos, así que se sueltan primero.
+    frappe.db.sql("update `tabLote de Pago` set lote_origen = NULL")
+    frappe.db.sql("update `tabLote de Pago Transferencia` set reintentado_en = NULL")
     for name in frappe.get_all("Lote de Pago", pluck="name"):
         # Un lote Transmitido o Aplicado no se deja cancelar (pagos/eventos.antes_de_cancelar), y sin
         # cancelarlo no se borra. En pruebas se le baja el estado para poder tirarlo.

@@ -1,5 +1,6 @@
 """Lotes de pago: qué se puede pagar, cómo se agrupa, el archivo TEF, la transmisión y el reintento."""
 from datetime import date
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -250,6 +251,142 @@ class TestLotes(FrappeTestCase):
         lote.reload()
         with self.assertRaises(frappe.ValidationError):
             lote.cancel()
+
+    def test_los_campos_de_dinero_de_un_lote_enviado_no_se_editan_a_mano(self):
+        """`read_only` es del formulario y `allow_on_submit` abre la escritura a cualquiera que pueda
+        guardar el lote: sin guardia de servidor, Tesorería podía devolver a 'Exportado' un lote ya
+        transmitido y volver a generar el archivo, o declarar aplicado un pago que el banco rechazó."""
+        nombre = self._lote_transmitido()
+        usuario(TESORERIA, "CxP Tesoreria")
+        frappe.set_user(TESORERIA)
+        lote = frappe.get_doc("Lote de Pago", nombre)
+        lote.estado_lote = "Exportado"
+        with self.assertRaises(frappe.ValidationError):
+            lote.save()
+        lote = frappe.get_doc("Lote de Pago", nombre)
+        lote.transferencias[0].estado_pago = "Aplicado"
+        with self.assertRaises(frappe.ValidationError):
+            lote.save()
+        lote = frappe.get_doc("Lote de Pago", nombre)
+        lote.transferencias[0].importe = 1
+        with self.assertRaises(frappe.ValidationError):
+            lote.save()
+        # Las notas sí: son el único campo que Tesorería escribe en un lote ya autorizado.
+        lote = frappe.get_doc("Lote de Pago", nombre)
+        lote.notas = "el banco pidió el archivo otra vez"
+        lote.save()
+        self.assertEqual(tuple(frappe.db.get_value("Lote de Pago", nombre, ["estado_lote", "notas"])),
+                         ("Transmitido", "el banco pidió el archivo otra vez"))
+
+    def test_no_se_cancela_un_lote_rechazado(self):
+        """Un lote Rechazado ya se subió a BancaNet: cancelarlo liberaría facturas que el banco
+        pudo haber pagado. El camino es 'Nuevo lote con los pendientes'."""
+        nombre = self._lote_transmitido()
+        frappe.db.set_value("Lote de Pago", nombre, "estado_lote", "Rechazado", update_modified=False)
+        lote = frappe.get_doc("Lote de Pago", nombre)
+        with self.assertRaises(frappe.ValidationError):
+            lote.cancel()
+
+    def test_un_fallo_al_reintentar_no_suelta_las_facturas(self):
+        """El lote de reintento se arma e inserta PRIMERO y las facturas se liberan después: si algo
+        falla, ninguna factura queda sin `en_lote` y sin lote que la reclame."""
+        lotes = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100},
+                                                           {"factura": self.fa2.name, "importe": 50}])
+        lote = frappe.get_doc("Lote de Pago", lotes[0]); lote.submit()
+        generar_archivo(lote.name); marcar_transmitido(lote.name, "119938")
+        lote.reload(); lote.transferencias[0].db_set("estado_pago", "Rechazado"); lote.db_set("estado_lote", "Rechazado")
+        with patch("gode_cxp.pagos.eventos.validar_nombre_tef", side_effect=RuntimeError("falla simulada")):
+            with self.assertRaises(RuntimeError):
+                nuevo_lote_pendientes(lote.name)
+        for factura in (self.fa1.name, self.fa2.name):
+            self.assertEqual(frappe.db.get_value("Purchase Invoice", factura, "en_lote"), lote.name)
+        self.assertEqual(frappe.db.count("Lote de Pago", {"lote_origen": lote.name}), 0)
+        # Y sin la falla el reintento sigue saliendo.
+        self.assertTrue(nuevo_lote_pendientes(lote.name))
+
+    def test_una_factura_apartada_por_otra_sesion_aborta_el_submit(self):
+        """Dos personas armando lotes a la vez: entre el borrador y el submit otra sesión pudo
+        apartar la factura. El submit se aborta y el lote se queda en borrador."""
+        (nombre,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+        frappe.db.set_value("Purchase Invoice", self.fa1.name, "en_lote", "LOTE-2026-9999")
+        lote = frappe.get_doc("Lote de Pago", nombre)
+        with self.assertRaises(frappe.ValidationError):
+            lote.submit()
+        self.assertEqual(frappe.db.get_value("Lote de Pago", nombre, "docstatus"), 0)
+
+    def test_tesoreria_borra_borradores_pero_no_lotes_enviados(self):
+        (borrador,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+        (enviado,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fb.name, "importe": 100}])
+        frappe.get_doc("Lote de Pago", enviado).submit()
+        usuario(TESORERIA, "CxP Tesoreria")
+        frappe.set_user(TESORERIA)
+        frappe.delete_doc("Lote de Pago", borrador)
+        self.assertFalse(frappe.db.exists("Lote de Pago", borrador))
+        with self.assertRaises(frappe.ValidationError):
+            frappe.delete_doc("Lote de Pago", enviado)
+
+    def test_un_borrador_de_otra_empresa_no_aparta_facturas(self):
+        """`facturas_pagables` esconde las facturas que un lote borrador ya tiene apartadas, pero
+        sólo las de la misma empresa: con dos empresas en el sitio, el borrador de una no puede
+        desaparecer facturas de la otra."""
+        (nombre,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+        frappe.db.set_value("Lote de Pago", nombre, "company", OTRA_EMPRESA, update_modified=False)
+        self.assertIn(self.fa1.name, {f["name"] for f in facturas_pagables(pruebas_comun.EMPRESA)})
+
+    def test_la_cuenta_de_cargo_debe_ser_de_la_empresa_del_lote(self):
+        cuenta = frappe.db.get_single_value("Configuracion CxP", "cuenta_bancaria_empresa")
+        antes = frappe.db.get_value("Bank Account", cuenta, "company")
+        frappe.db.set_value("Bank Account", cuenta, "company", OTRA_EMPRESA, update_modified=False)
+        try:
+            with self.assertRaises(frappe.ValidationError):
+                crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+        finally:
+            frappe.db.set_value("Bank Account", cuenta, "company", antes, update_modified=False)
+
+    def test_la_autorizacion_del_banco_es_un_numero(self):
+        """El acuse de BancaNet es un número y se va tal cual al reporte para COI: si Tesorería pega
+        otra cosa, el lote quedaría Transmitido con basura."""
+        (nombre,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+        frappe.get_doc("Lote de Pago", nombre).submit(); generar_archivo(nombre)
+        for malo in ("", "   ", "abc", "119938-A", "119 938", "1234567890123"):
+            with self.assertRaises(frappe.ValidationError):
+                marcar_transmitido(nombre, malo)
+        marcar_transmitido(nombre, " 119938 ")
+        self.assertEqual(tuple(frappe.db.get_value("Lote de Pago", nombre, ["estado_lote", "autorizacion_banco"])),
+                         ("Transmitido", "119938"))
+
+    def test_el_filtro_del_tef_anterior_no_busca_un_file_url_vacio(self):
+        """Sin archivo previo el filtro sólo puede ir por nombre: `file_url = ""` casaría con
+        cualquier adjunto del lote sin URL y generar_archivo se lo llevaría."""
+        from gode_cxp.pagos.lotes import _filtros_del_tef_anterior
+        self.assertEqual(_filtros_del_tef_anterior(None, "170926-0001-12.txt"),
+                         [["file_name", "=", "170926-0001-12.txt"]])
+        self.assertEqual(_filtros_del_tef_anterior("/private/files/viejo.txt", "170926-0001-12.txt"),
+                         [["file_name", "=", "170926-0001-12.txt"], ["file_url", "=", "/private/files/viejo.txt"]])
+
+    def test_referencia_numerica_fija(self):
+        """Si Tesorería configura una referencia fija, es la que va al lote y al archivo (en lugar de
+        la fecha de pago)."""
+        frappe.db.set_single_value("Configuracion CxP", "referencia_numerica_modo", "Fija")
+        frappe.db.set_single_value("Configuracion CxP", "referencia_numerica_fija", "1234567")
+        try:
+            (nombre,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+            self.assertEqual(frappe.db.get_value("Lote de Pago", nombre, "referencia_numerica"), "1234567")
+            frappe.get_doc("Lote de Pago", nombre).submit()
+            r = generar_archivo(nombre)
+            contenido = frappe.get_doc("File", {"file_url": r["file_url"]}).get_content()
+            leido = leer_tef(contenido if isinstance(contenido, bytes) else contenido.encode("ascii"))
+            self.assertEqual(leido["referencia_numerica"], "1234567")
+        finally:
+            frappe.db.set_single_value("Configuracion CxP", "referencia_numerica_modo", "Fecha del lote")
+            frappe.db.set_single_value("Configuracion CxP", "referencia_numerica_fija", None)
+
+    def test_facturas_pagables_filtra_por_proveedor_y_por_vencimiento(self):
+        self.assertEqual({f["name"] for f in facturas_pagables(pruebas_comun.EMPRESA, proveedor=self.fa1.supplier)},
+                         {self.fa1.name, self.fa2.name})
+        self.assertEqual(facturas_pagables(pruebas_comun.EMPRESA, hasta_vencimiento="2000-01-01"), [])
+        self.assertEqual({f["name"] for f in facturas_pagables(pruebas_comun.EMPRESA, hasta_vencimiento="2100-01-01")},
+                         {self.fa1.name, self.fa2.name, self.fb.name})
 
     def test_nuevo_lote_con_pendientes(self):
         lotes = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}, {"factura": self.fa2.name, "importe": 50}])

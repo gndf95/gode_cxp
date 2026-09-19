@@ -271,6 +271,36 @@ class TestAplicar(FrappeTestCase):
             api.aplicar(r.name)
         self.assertEqual(frappe.db.count("Payment Entry", {"lote_pago": self.lote12.name}), 0)
 
+    def test_un_movimiento_que_ya_tiene_pago_no_se_edita(self):
+        """Editar la línea de un pago ya creado no deshace el pago: sólo deja el resultado mintiendo
+        sobre lo que pasó con el dinero."""
+        r = self._resultado(self.lote12, {1: "3"})
+        aplicar_resultado(r.name)
+        for campo, valor in (("estatus", "5"), ("importe", 1.0), ("linea", 7), ("cuenta", "0000")):
+            with self.subTest(campo=campo):
+                doc = frappe.get_doc("Resultado Bancario", r.name)
+                doc.movimientos[0].set(campo, valor)
+                with self.assertRaisesRegex(frappe.ValidationError, "ya tiene el pago"):
+                    doc.save()
+
+    def test_un_movimiento_con_pago_no_se_puede_quitar_del_resultado(self):
+        r = self._resultado(self.lote12, {1: "3"})
+        aplicar_resultado(r.name)
+        doc = frappe.get_doc("Resultado Bancario", r.name)
+        doc.set("movimientos", [])
+        doc.append("movimientos", {"linea": 1, "cuenta": CLABE_A, "importe": 1160, "estatus": "3"})
+        with self.assertRaisesRegex(frappe.ValidationError, "ya tiene el pago"):
+            doc.save()
+
+    def test_el_segundo_resultado_avisa_que_el_lote_ya_tiene_uno_aplicado(self):
+        """Un segundo archivo del banco sobre el mismo lote está permitido (el banco puede mandar una
+        corrección), pero el resultado lo dice: lo que ya se pagó no se vuelve a pagar."""
+        r = self._resultado(self.lote12, {1: "3"})
+        aplicar_resultado(r.name)
+        r2 = self._resultado(self.lote12, {1: "3"})
+        self.assertEqual(r2.estado, "Con diferencias")
+        self.assertIn(r.name, r2.diferencias)
+
     def test_tesoreria_aplica_y_recibe_el_resumen(self):
         """El contrato que consume el botón del formulario."""
         usuario(TESORERIA, "CxP Tesoreria")

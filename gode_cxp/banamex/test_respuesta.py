@@ -12,12 +12,12 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from gode_cxp.banamex import api, aplicar
-from gode_cxp.banamex.respuesta import RespuestaInvalida, leer_respuesta
+from gode_cxp.banamex.respuesta import CANCELADO, RECHAZADO, RespuestaInvalida, leer_respuesta
 from gode_cxp.cfdi import ejemplos
 from gode_cxp.facturas import pruebas_comun
 from gode_cxp.facturas.pruebas_comun import cuenta_verificada, factura_aprobada, usuario
 from gode_cxp.pagos.lotes import crear_lotes, generar_archivo, marcar_transmitido
-from gode_cxp.pagos.tef import generar_tef
+from gode_cxp.pagos.tef import L3, generar_tef
 from gode_cxp.setup.produccion import configurar_pagos
 
 CSV = b"""Consecutivo,Beneficiario,Cuenta,Importe,Estatus,Descripcion,Clave de rastreo
@@ -36,7 +36,8 @@ TESORERIA, REVISOR = "prueba.tesoreria@cxp.local", "prueba.revisor@cxp.local"
 
 def exportacion(estatus=("3", "5"), errores=("0000", "0012"),
                 mensajes=("", "VERIFIQUE, CARACTERES INVALIDOS"), estatus_archivo="30",
-                autorizacion="000000119938", salto="\r\n", recortar=False):
+                autorizacion="000000119938", salto="\r\n", recortar=False,
+                originado=("    ", "    "), autorizaciones=None):
     """El archivo de EXPORTACIÓN del banco, armado sobre el de importación que ya sabemos generar.
 
     Layout de docs/banamex-formatos.md (sección "Exportación"): registro 1 + estatus del archivo (2) +
@@ -48,8 +49,8 @@ def exportacion(estatus=("3", "5"), errores=("0000", "0012"),
     lineas = [r1 + estatus_archivo + autorizacion, r2 + "0" * 18]
     for i, r3 in enumerate(r3s):
         # El banco sólo devuelve autorización de lo que sí pagó; lo rechazado viene en ceros.
-        aut = autorizacion if estatus[i] == "3" else "0" * 12
-        lineas.append(r3 + aut + estatus[i] + " " * 4 + errores[i] + mensajes[i].ljust(31))
+        aut = autorizaciones[i] if autorizaciones else (autorizacion if estatus[i] == "3" else "0" * 12)
+        lineas.append(r3 + aut + estatus[i] + originado[i] + errores[i] + mensajes[i].ljust(31))
     lineas.append(r4)
     if recortar:
         lineas = [l.rstrip() for l in lineas]
@@ -104,6 +105,46 @@ class TestLectura(unittest.TestCase):
         self.assertIn("rechazado", r["movimientos"][0]["motivo"])
         self.assertEqual((r["num_aplicados"], r["num_rechazados"]), (0, 2))
 
+    def test_un_archivo_rechazado_tumba_tambien_las_lineas_que_dicen_aplicado(self):
+        """32 / 10 mandan sobre la línea: si el banco tumbó el archivo COMPLETO no pagó nada, así que
+        un '3' por transferencia es una contradicción y no una excepción. Se fuerza a rechazada."""
+        for archivo, palabra in ((RECHAZADO, "rechazado"), (CANCELADO, "cancelado")):
+            with self.subTest(archivo=archivo):
+                r = leer_respuesta(exportacion(estatus=("3", "3"), estatus_archivo=archivo), "x.txt")
+                self.assertEqual([m["estatus"] for m in r["movimientos"]], ["5", "5"])
+                self.assertEqual((r["num_aplicados"], r["num_rechazados"]), (0, 2))
+                self.assertIn(palabra, r["movimientos"][0]["motivo"])
+
+    def test_un_estatus_de_archivo_desconocido_es_el_canario_de_las_posiciones(self):
+        """El estatus del archivo sólo puede ser 30, 32 o 10: cualquier otra cosa en esa posición
+        significa que los campos del layout no están donde los esperamos."""
+        with self.assertRaisesRegex(RespuestaInvalida, "layout"):
+            leer_respuesta(exportacion(estatus_archivo="99"), "x.txt")
+
+    def test_el_campo_error_originado_tiene_que_venir_en_blancos(self):
+        with self.assertRaisesRegex(RespuestaInvalida, "layout"):
+            leer_respuesta(exportacion(originado=("XXXX", "    ")), "x.txt")
+
+    def test_la_autorizacion_de_la_linea_tiene_que_ser_digitos_o_blancos(self):
+        with self.assertRaisesRegex(RespuestaInvalida, "layout"):
+            leer_respuesta(exportacion(autorizaciones=("BNET00119938", "000000000000")), "x.txt")
+
+    def test_un_archivo_corrido_un_caracter_no_se_lee_a_ciegas(self):
+        """El canario de verdad: un archivo con un carácter de más en un registro 3 deja todos los
+        campos de respuesta corridos, y leerlo como si nada sería inventarse el estatus del banco."""
+        for desplazar in (1, -1):
+            with self.subTest(desplazar=desplazar):
+                lineas = exportacion().decode("ascii").split("\r\n")
+                for i, linea in enumerate(lineas):
+                    if linea[:1] == "3":
+                        # Se mete (o se quita) un carácter justo donde termina el cuerpo de importación,
+                        # conservando el largo del registro para que no salte el chequeo de longitud.
+                        lineas[i] = (linea[:L3] + " " + linea[L3:-1] if desplazar == 1
+                                     else linea[:L3] + linea[L3 + 1:] + " ")
+                        break
+                with self.assertRaisesRegex(RespuestaInvalida, "layout"):
+                    leer_respuesta("\r\n".join(lineas).encode("ascii"), "corrido.txt")
+
     def test_el_archivo_que_se_le_subio_al_banco_no_es_una_respuesta(self):
         with self.assertRaises(RespuestaInvalida):
             leer_respuesta(generar_tef(LOTE), "170926-0002-12.txt")
@@ -119,6 +160,27 @@ class TestLectura(unittest.TestCase):
             leer_respuesta(b"Importe,Estatus\n100,9\n", "x.csv")
         with self.assertRaises(RespuestaInvalida):        # sin las columnas mínimas
             leer_respuesta(b"Beneficiario,Cuenta\nX Y,0721800070900450\n", "x.csv")
+
+    def test_un_importe_vacio_no_es_cero(self):
+        """Un renglón con el importe en blanco es un archivo que no entendimos, no una transferencia
+        de cero pesos: darlo por bueno sería cruzarlo con la transferencia equivocada."""
+        with self.assertRaisesRegex(RespuestaInvalida, "vacío"):
+            leer_respuesta(b"Importe,Estatus\n,3\n", "x.csv")
+
+    def test_un_importe_con_coma_decimal_no_se_adivina(self):
+        """'3.275,10' son 3275.10 en Europa y 327510 si se le quitan las comas: no se adivina."""
+        for crudo in (b"3.275,10", b"3275,10", b"1,5"):
+            with self.subTest(crudo=crudo):
+                with self.assertRaisesRegex(RespuestaInvalida, "coma"):
+                    leer_respuesta(b"Importe,Estatus\n" + crudo + b",3\n", "x.csv")
+
+    def test_el_separador_de_miles_si_se_entiende(self):
+        r = leer_respuesta(b'Importe,Estatus\n"13,265.00",3\n', "x.csv")
+        self.assertEqual(r["movimientos"][0]["importe"], Decimal("13265.00"))
+
+    def test_el_nombre_del_archivo_sale_en_el_mensaje(self):
+        with self.assertRaisesRegex(RespuestaInvalida, "respuesta-del-banco.csv"):
+            leer_respuesta(b"   ", "respuesta-del-banco.csv")
 
 
 class TestResultadoBancario(FrappeTestCase):
@@ -245,6 +307,68 @@ class TestResultadoBancario(FrappeTestCase):
         with self.assertRaises(frappe.ValidationError):
             aplicar.cargar_archivo(r.name, file_url)
         self.assertEqual(frappe.db.get_value("Resultado Bancario", r.name, "origen"), "Captura manual")
+
+    def test_cargar_el_archivo_de_ancho_fijo_de_exportacion(self):
+        """El otro formato que da el banco: el mismo archivo que se le subió con los campos de
+        respuesta pegados al final. Aquí es de OTRO lote a propósito, y eso se ve en las diferencias."""
+        r = aplicar.crear_resultado_desde_lote(self._lote_transmitido())
+        file_url = self._subir(exportacion(), nombre="170926-0002-12.txt", resultado=r.name)
+        r = aplicar.cargar_archivo(r.name, file_url)
+        self.assertEqual((r.origen, r.estatus_archivo, r.autorizacion),
+                         ("Archivo del portal", "30", "119938"))
+        self.assertEqual([m.estatus for m in r.movimientos], ["3", "5"])
+        self.assertEqual((r.num_aplicados, r.num_rechazados, r.total_archivo), (1, 1, 16540.10))
+        self.assertEqual(r.estado, "Con diferencias")
+        self.assertIn("2 movimientos", r.diferencias)
+
+    def test_una_linea_que_no_corresponde_a_ninguna_transferencia(self):
+        r = aplicar.crear_resultado_desde_lote(self._lote_transmitido())
+        r.movimientos[0].linea = 9
+        r.save()
+        self.assertEqual(r.estado, "Con diferencias")
+        self.assertIn("9", r.diferencias)
+        self.assertFalse(r.movimientos[0].transferencia_idx)
+
+    def test_un_conteo_distinto_de_movimientos_es_una_diferencia(self):
+        r = aplicar.crear_resultado_desde_lote(self._lote_transmitido())
+        r.append("movimientos", {"linea": 2, "cuenta": CLABE_12, "importe": 50, "estatus": "3"})
+        r.save()
+        self.assertEqual(r.estado, "Con diferencias")
+        self.assertIn("2 movimientos", r.diferencias)
+
+    def test_un_archivo_rechazado_por_el_banco_se_dice_en_las_diferencias(self):
+        r = aplicar.crear_resultado_desde_lote(self._lote_transmitido())
+        r.estatus_archivo = "32"
+        r.save()
+        self.assertEqual(r.estado, "Con diferencias")
+        self.assertIn("rechazó", r.diferencias)
+
+    def test_la_guardia_no_deja_mover_el_estado_a_mano(self):
+        """`estado`, `aplicado_el` y `aplicado_por` los escribe la aplicación de los pagos: a mano
+        serían una factura dada por pagada sin que exista el pago."""
+        r = aplicar.crear_resultado_desde_lote(self._lote_transmitido())
+        for campo, valor in (("estado", "Aplicado"), ("estado", "Revisado"),
+                             ("aplicado_el", "2026-09-18 10:00:00"), ("aplicado_por", "Administrator")):
+            with self.subTest(campo=campo, valor=valor):
+                doc = frappe.get_doc("Resultado Bancario", r.name)
+                doc.set(campo, valor)
+                with self.assertRaisesRegex(frappe.ValidationError, "a mano"):
+                    doc.save()
+
+    def test_la_guardia_no_deja_escribir_la_accion_de_un_movimiento_a_mano(self):
+        r = aplicar.crear_resultado_desde_lote(self._lote_transmitido())
+        r.movimientos[0].accion = "Pago creado"
+        with self.assertRaisesRegex(frappe.ValidationError, "a mano"):
+            r.save()
+
+    def test_la_guardia_deja_pasar_lo_que_si_se_captura(self):
+        """La guardia no puede estorbar el trabajo de todos los días: el estatus, la clave de rastreo
+        y el motivo de una línea sin pago se capturan a mano y se guardan sin más."""
+        r = aplicar.crear_resultado_desde_lote(self._lote_transmitido())
+        r.movimientos[0].estatus = "5"
+        r.movimientos[0].motivo = "CUENTA CANCELADA"
+        r.save()
+        self.assertEqual((r.num_rechazados, r.estado), (1, "Importado"))
 
     def test_solo_tesoreria_captura_el_resultado(self):
         lote = self._lote_transmitido()

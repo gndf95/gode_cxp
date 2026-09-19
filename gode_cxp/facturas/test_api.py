@@ -10,6 +10,7 @@ from pypdf import PdfWriter
 from gode_cxp.cfdi import ejemplos
 from gode_cxp.facturas import api, pruebas_comun
 from gode_cxp.facturas.api import crear_factura, procesar_archivos
+from gode_cxp.facturas.pruebas_comun import usuario
 
 SOLO_LECTURA = "prueba.conta@cxp.local"   # CxP Contabilidad: ve la bandeja pero no puede cargar nada
 
@@ -34,14 +35,6 @@ def zip_con(miembros):
         for nombre, contenido in miembros:
             z.writestr(nombre, contenido)
     return buf.getvalue()
-
-
-def usuario(correo, rol):
-    if not frappe.db.exists("User", correo):
-        u = frappe.get_doc({"doctype": "User", "email": correo, "first_name": correo.split("@")[0], "send_welcome_email": 0})
-        u.append("roles", {"role": rol})
-        u.insert(ignore_permissions=True)
-    return correo
 
 
 class TestApi(FrappeTestCase):

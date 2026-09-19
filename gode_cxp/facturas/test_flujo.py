@@ -5,6 +5,7 @@ from frappe.tests.utils import FrappeTestCase
 
 from gode_cxp.cfdi import ejemplos
 from gode_cxp.facturas import pruebas_comun
+from gode_cxp.facturas.pruebas_comun import usuario
 from gode_cxp.facturas.crear_factura import crear_factura_desde_cfdi
 from gode_cxp.facturas.recepcion import procesar_xml
 from gode_cxp.setup import flujo, roles
@@ -21,14 +22,6 @@ SIN_PERMISO = (frappe.PermissionError, WorkflowPermissionError, WorkflowTransiti
 
 CAMPOS_QUE_NO_SE_COPIAN = ("cfdi_uuid", "cfdi_recibido", "estado_revision", "recepcion_confirmada",
                            "recepcion_confirmada_por", "recepcion_confirmada_el", "nota_aclaracion")
-
-
-def usuario(correo, rol):
-    if not frappe.db.exists("User", correo):
-        u = frappe.get_doc({"doctype": "User", "email": correo, "first_name": correo.split("@")[0], "send_welcome_email": 0})
-        u.append("roles", {"role": rol})
-        u.insert(ignore_permissions=True)
-    return correo
 
 
 class TestFlujo(FrappeTestCase):

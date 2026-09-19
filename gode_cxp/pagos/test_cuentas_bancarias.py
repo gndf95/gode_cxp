@@ -3,6 +3,7 @@ from frappe.tests.utils import FrappeTestCase
 
 from gode_cxp.facturas import pruebas_comun
 from gode_cxp.facturas.proveedores import proveedor_por_rfc
+from gode_cxp.facturas.pruebas_comun import usuario
 from gode_cxp.pagos.cuentas_bancarias import (nombre_tef_para, naturaleza_por_clabe, transliterar, validar_clabe,
                                               validar_nombre_tef, verificar_cuenta)
 
@@ -13,16 +14,6 @@ CLABE_BANAMEX = "002180012345678906"
 CLABE_OTRO = "072180007090045065"       # del archivo PAGOS2.txt (Banorte)
 
 REVISOR, TESORERIA = "prueba.revisor@cxp.local", "prueba.tesoreria@cxp.local"
-
-
-def usuario(correo, rol):
-    """Usuario de prueba con un solo rol CxP. limpiar() los borra, así que se recrean en cada prueba."""
-    if not frappe.db.exists("User", correo):
-        u = frappe.get_doc({"doctype": "User", "email": correo, "first_name": correo.split("@")[0],
-                            "send_welcome_email": 0})
-        u.append("roles", {"role": rol})
-        u.insert(ignore_permissions=True)
-    return correo
 
 
 class TestPuras(FrappeTestCase):

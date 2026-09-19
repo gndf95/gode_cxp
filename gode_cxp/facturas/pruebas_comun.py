@@ -60,6 +60,18 @@ def asegurar_catalogo_de_pagos():
         frappe.db.commit()
 
 
+def usuario(correo, rol):
+    """Usuario de prueba con un solo rol CxP. limpiar() los borra (USUARIOS_PRUEBA), así que las
+    pruebas los recrean en cada setUp. Vive aquí y no en un test_*.py para que las pruebas de un
+    módulo no tengan que importar las de otro."""
+    if not frappe.db.exists("User", correo):
+        u = frappe.get_doc({"doctype": "User", "email": correo, "first_name": correo.split("@")[0],
+                            "send_welcome_email": 0})
+        u.append("roles", {"role": rol})
+        u.insert(ignore_permissions=True)
+    return correo
+
+
 def factura_aprobada(xml_bytes, nombre="factura.xml"):
     """Procesa el XML, crea la factura y la lleva hasta Aprobada (docstatus 1) como Administrator.
 

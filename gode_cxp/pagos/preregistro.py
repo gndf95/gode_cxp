@@ -185,11 +185,22 @@ def _libro(filas):
     return flujo.getvalue()
 
 
+def _lista_de_cuentas(cuentas):
+    """La lista de nombres tal como puede llegar del escritorio: texto JSON, un solo nombre o nada."""
+    if isinstance(cuentas, str):
+        try:
+            cuentas = frappe.parse_json(cuentas)
+        except (ValueError, TypeError):
+            cuentas = [cuentas]          # llegó un solo nombre, no una lista JSON
+    if isinstance(cuentas, str):
+        cuentas = [cuentas]              # llegó un JSON con un solo texto
+    return cuentas
+
+
 def descargar_preregistro(cuentas=None):
     """Arma el XLSX con las filas del alta, lo guarda como File privado y deja esas cuentas en
     'Enviada al banco'. Devuelve {"file_url", "nombre", "cuentas"}."""
-    if isinstance(cuentas, str):
-        cuentas = frappe.parse_json(cuentas)
+    cuentas = _lista_de_cuentas(cuentas)
     # Los nombres se resuelven primero: `filas_para_plantilla` devuelve sólo las columnas del banco
     # y hace falta saber a qué cuentas hay que ponerles la fecha de envío.
     nombres = [c.name for c in cuentas_por_registrar(cuentas)]
@@ -281,13 +292,7 @@ def aplicar_respuesta_preregistro(file_url):
 def marcar_registrada(cuentas):
     """Para los proveedores que ya estaban dados de alta en BancaNet desde antes de este sistema:
     Tesorería lo declara a mano y queda escrito quién lo hizo."""
-    if isinstance(cuentas, str):
-        try:
-            cuentas = frappe.parse_json(cuentas)
-        except (ValueError, TypeError):
-            cuentas = [cuentas]          # llegó un solo nombre, no una lista JSON
-    if isinstance(cuentas, str):
-        cuentas = [cuentas]              # llegó un JSON con un solo texto
+    cuentas = _lista_de_cuentas(cuentas)
     if not cuentas:
         frappe.throw(_("No se eligió ninguna cuenta bancaria."))
     respuesta = MARCADA_A_MANO.format(frappe.session.user)[:LARGO_RESPUESTA]

@@ -52,8 +52,14 @@ def asegurar_preregistro():
     (que ya existía) y poner 'Sin registrar' en las cuentas de proveedor que se dieron de alta antes
     de que el campo existiera —sin eso quedarían en NULL, no saldrían en la lista de pendientes y el
     candado del lote las tomaría por no registradas sin que nadie pudiera mandarlas al banco."""
+    # Se pregunta por la FILA de tabSingles y no por el valor: `get_single_value` convierte según el
+    # tipo del campo, así que un Check que nunca se guardó devuelve 0 (no None) y no habría forma de
+    # distinguir "apagado a propósito" de "todavía no existe". Con la fila presente no se toca nada:
+    # lo que Tesorería configure manda.
+    capturados = {fila[0] for fila in frappe.db.sql(
+        "select field from tabSingles where doctype = %s", ("Configuracion CxP",))}
     for campo, valor in DEFAULTS_PREREGISTRO.items():
-        if frappe.db.get_single_value("Configuracion CxP", campo) is None:
+        if campo not in capturados:
             frappe.db.set_single_value("Configuracion CxP", campo, valor)
     frappe.db.sql("""update `tabBank Account` set estado_preregistro = 'Sin registrar'
                      where ifnull(party_type, '') = 'Supplier' and ifnull(estado_preregistro, '') = ''""")

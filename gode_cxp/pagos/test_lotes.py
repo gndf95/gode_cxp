@@ -122,6 +122,21 @@ class TestLotes(FrappeTestCase):
         # El saldo de las facturas no se movió
         self.assertEqual(frappe.db.get_value("Purchase Invoice", self.fa1.name, "outstanding_amount"), self.fa1.outstanding_amount)
 
+    def test_regenerar_reemplaza_el_tef_y_respeta_los_demas_adjuntos(self):
+        """BancaNet puede rechazar un archivo: mientras el lote no esté transmitido se vuelve a
+        generar, con el mismo secuencial, sin dejar copias y sin borrar lo que Tesorería adjuntó."""
+        (nombre,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+        lote = frappe.get_doc("Lote de Pago", nombre); lote.submit()
+        r1 = generar_archivo(nombre)
+        frappe.get_doc({"doctype": "File", "file_name": "acuse.txt", "content": b"acuse", "is_private": 1,
+                        "attached_to_doctype": "Lote de Pago", "attached_to_name": nombre}).insert(ignore_permissions=True)
+        r2 = generar_archivo(nombre)
+        self.assertEqual(r1["nombre_archivo"], r2["nombre_archivo"])
+        self.assertEqual(frappe.db.get_value("Lote de Pago", nombre, "secuencial"), 1)
+        adjuntos = frappe.get_all("File", filters={"attached_to_doctype": "Lote de Pago", "attached_to_name": nombre},
+                                  pluck="file_name")
+        self.assertEqual(sorted(adjuntos), sorted(["acuse.txt", r2["nombre_archivo"]]))
+
     def test_cancelar_libera_facturas(self):
         (nombre,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
         lote = frappe.get_doc("Lote de Pago", nombre); lote.submit(); lote.reload(); lote.cancel()

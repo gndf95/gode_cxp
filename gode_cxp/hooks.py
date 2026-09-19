@@ -35,6 +35,7 @@ doc_events = {
         "on_submit": "gode_cxp.pagos.eventos.al_autorizar",
         "before_cancel": "gode_cxp.pagos.eventos.antes_de_cancelar",
         "on_cancel": "gode_cxp.pagos.eventos.al_cancelar",
+        "on_trash": "gode_cxp.pagos.eventos.antes_de_borrar",
     },
 }
 

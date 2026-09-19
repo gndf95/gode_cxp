@@ -9,7 +9,8 @@ from frappe.utils import now_datetime
 from gode_cxp.cfdi import ejemplos
 from gode_cxp.facturas import pruebas_comun
 from gode_cxp.facturas.pruebas_comun import cuenta_verificada, factura_aprobada, usuario, xml_con
-from gode_cxp.pagos.lotes import crear_lotes, facturas_pagables, generar_archivo, marcar_transmitido, nuevo_lote_pendientes
+from gode_cxp.pagos.eventos import al_autorizar, validar_cambios_del_lote_enviado, validar_lote
+from gode_cxp.pagos.lotes import bloquear_facturas, crear_lotes, facturas_pagables, generar_archivo, marcar_transmitido, nuevo_lote_pendientes
 from gode_cxp.pagos.tef import leer_tef
 from gode_cxp.setup.produccion import configurar_pagos
 
@@ -310,9 +311,22 @@ class TestLotes(FrappeTestCase):
         lote = frappe.get_doc("Lote de Pago", lotes[0]); lote.submit()
         generar_archivo(lote.name); marcar_transmitido(lote.name, "119938")
         lote.reload(); lote.transferencias[0].db_set("estado_pago", "Rechazado"); lote.db_set("estado_lote", "Rechazado")
-        with patch("gode_cxp.pagos.eventos.validar_nombre_tef", side_effect=RuntimeError("falla simulada")):
+        guardar = frappe.db.set_value
+        liberadas = []
+
+        def fallar_despues_de_liberar(doctype, nombre, campo, valor=None, **kwargs):
+            resultado = guardar(doctype, nombre, campo, valor, **kwargs)
+            if doctype == "Purchase Invoice" and campo == "en_lote" and valor is None:
+                self.assertEqual(frappe.db.count("Lote de Pago", {"lote_origen": lote.name}), 1)
+                liberadas.append(nombre)
+                raise RuntimeError("falla después del insert y de liberar una factura")
+            return resultado
+
+        with patch.object(frappe.db, "set_value", side_effect=fallar_despues_de_liberar):
             with self.assertRaises(RuntimeError):
                 nuevo_lote_pendientes(lote.name)
+        self.assertEqual(len(liberadas), 1)
+        self.assertFalse(frappe.db.get_value("Lote de Pago Transferencia", lote.transferencias[0].name, "reintentado_en"))
         for factura in (self.fa1.name, self.fa2.name):
             self.assertEqual(frappe.db.get_value("Purchase Invoice", factura, "en_lote"), lote.name)
         self.assertEqual(frappe.db.count("Lote de Pago", {"lote_origen": lote.name}), 0)
@@ -339,6 +353,11 @@ class TestLotes(FrappeTestCase):
         self.assertFalse(frappe.db.exists("Lote de Pago", borrador))
         with self.assertRaises(frappe.ValidationError):
             frappe.delete_doc("Lote de Pago", enviado)
+        lote = frappe.get_doc("Lote de Pago", enviado)
+        lote.cancel()
+        with self.assertRaises(frappe.ValidationError):
+            frappe.delete_doc("Lote de Pago", enviado)
+        self.assertTrue(frappe.db.exists("Lote de Pago", enviado))
 
     def test_un_borrador_de_otra_empresa_no_aparta_facturas(self):
         """`facturas_pagables` esconde las facturas que un lote borrador ya tiene apartadas, pero
@@ -413,3 +432,148 @@ class TestLotes(FrappeTestCase):
         self.assertEqual((n.lote_origen, n.estado_lote, n.docstatus, len(n.transferencias), len(n.facturas)), (lote.name, "Preparado", 0, 1, 2))
         self.assertIsNone(frappe.db.get_value("Purchase Invoice", self.fa1.name, "en_lote"))   # liberada hasta que se autorice el nuevo
         self.assertIsNone(nuevo_lote_pendientes(lote.name))   # ya no queda nada pendiente
+
+    def _lote_con_dos_transferencias(self):
+        lote = self._lote_a_mano([(self.fa1.name, 100), (self.fa2.name, 50)], importe=100)
+        datos = lote.transferencias[0].as_dict()
+        datos.pop("name", None)
+        datos["importe"] = 50
+        datos["idx"] = 2
+        lote.append("transferencias", datos)
+        lote.facturas[1].transferencia = 2
+        lote.insert()
+        lote.submit()
+        return lote
+
+    def test_reintento_excluye_facturas_aplicadas_incluso_con_flag(self):
+        lote = self._lote_con_dos_transferencias()
+        lote.transferencias[0].db_set("estado_pago", "Aplicado")
+        lote.transferencias[1].db_set("estado_pago", "Rechazado")
+        lote.db_set("estado_lote", "Parcial")
+        manual = self._lote_a_mano([(self.fa2.name, 50)], lote_origen=lote.name)
+        with self.assertRaisesRegex(frappe.ValidationError, "lote origen"):
+            manual.insert()
+        for validar in (validar_lote, al_autorizar):
+            manual = self._lote_a_mano([(self.fa1.name, 100)], lote_origen=lote.name)
+            manual.flags.reintento_interno = True
+            with self.subTest(validar=validar.__name__):
+                with self.assertRaises(frappe.ValidationError):
+                    validar(manual)
+        nuevo = frappe.get_doc("Lote de Pago", nuevo_lote_pendientes(lote.name))
+        self.assertEqual([f.factura for f in nuevo.facturas], [self.fa2.name])
+        self.assertEqual(len(nuevo.transferencias), 1)
+        self.assertEqual(frappe.db.get_value("Purchase Invoice", self.fa1.name, "en_lote"), lote.name)
+        # El mismo destino sigue siendo válido; otro destino ya no puede reclamar esa factura.
+        from gode_cxp.pagos.eventos import _facturas_reintentables
+        self.assertEqual(_facturas_reintentables(lote.name, nuevo.name), {self.fa2.name})
+        self.assertEqual(_facturas_reintentables(lote.name, "OTRO"), set())
+        nuevo.submit()
+
+    def test_validaciones_usan_la_lectura_con_candado(self):
+        lote = self._lote_a_mano([(self.fa1.name, 100)])
+        actuales = bloquear_facturas([self.fa1.name])
+        actuales[self.fa1.name].en_lote = "OTRO"
+        self.assertFalse(frappe.db.get_value("Purchase Invoice", self.fa1.name, "en_lote"))
+        for validar in (validar_lote, al_autorizar):
+            with self.subTest(validar=validar.__name__):
+                with patch("gode_cxp.pagos.eventos.bloquear_facturas", return_value=actuales):
+                    with self.assertRaisesRegex(frappe.ValidationError, "OTRO"):
+                        validar(lote)
+
+    def test_submit_ve_el_commit_de_una_segunda_conexion(self):
+        try:
+            import pymysql
+        except ImportError:
+            self.skipTest("El runner no tiene pymysql para abrir una segunda conexión MariaDB.")
+        try:
+            segunda = pymysql.connect(
+                host=frappe.conf.db_host or "localhost", port=int(frappe.conf.db_port or 3306),
+                user=frappe.conf.db_user or frappe.conf.db_name,
+                password=frappe.conf.db_password, database=frappe.conf.db_name,
+                unix_socket=frappe.conf.db_socket or None, connect_timeout=5)
+        except pymysql.MySQLError as error:
+            self.skipTest("El runner no permite una segunda conexión MariaDB: " + type(error).__name__)
+        anterior = None
+        preparada = False
+        try:
+            (nombre,) = crear_lotes(pruebas_comun.EMPRESA, FECHA,
+                                   [{"factura": self.fa1.name, "importe": 100}])
+            # Publica los fixtures y suelta los candados antes de abrir el snapshot a probar.
+            frappe.db.commit()
+            anterior = frappe.db.get_value("Purchase Invoice", self.fa1.name, "en_lote")
+            lote = frappe.get_doc("Lote de Pago", nombre)
+            preparada = True
+            with segunda.cursor() as cursor:
+                cursor.execute("update `tabPurchase Invoice` set en_lote='OTRO' where name=%s", (self.fa1.name,))
+            segunda.commit()
+            self.assertEqual(frappe.db.get_value("Purchase Invoice", self.fa1.name, "en_lote"), anterior)
+            with self.assertRaisesRegex(frappe.ValidationError, "OTRO"):
+                lote.submit()
+            self.assertEqual(frappe.db.get_value("Lote de Pago", nombre, "docstatus"), 0)
+        finally:
+            # Suelta FOR UPDATE antes de restaurar desde la segunda conexión para no bloquearla.
+            frappe.db.rollback()
+            try:
+                if preparada:
+                    with segunda.cursor() as cursor:
+                        cursor.execute("update `tabPurchase Invoice` set en_lote=%s where name=%s",
+                                       (anterior, self.fa1.name))
+                    segunda.commit()
+            finally:
+                segunda.close()
+
+    def test_guardia_blinda_padre_y_ambas_tablas_por_nombre(self):
+        lote = self._lote_con_dos_transferencias()
+        lote.reload()
+        for tabla, cambios in (
+                (None, {"company": OTRA_EMPRESA, "fecha_pago": "2026-10-01", "naturaleza": "06",
+                        "concepto": "otro", "lote_origen": "OTRO", "num_transferencias": 3,
+                        "secuencial": "inválido"}),
+                ("facturas", {"factura": self.fb.name, "importe": 99.999, "transferencia": 2,
+                              "proveedor": self.fb.supplier, "folio": "OTRO", "idx": 2}),
+                ("transferencias", {"proveedor": self.fb.supplier, "importe": 99.999,
+                                    "cuenta_bancaria": self.cta_b, "idx": 2})):
+            for campo, valor in cambios.items():
+                with self.subTest(tabla=tabla, campo=campo):
+                    actual = frappe.get_doc("Lote de Pago", lote.name)
+                    destino = actual.get(tabla)[0] if tabla else actual
+                    destino.set(campo, valor)
+                    with patch.object(actual, "get_doc_before_save", return_value=lote):
+                        with self.assertRaises(frappe.ValidationError):
+                            validar_cambios_del_lote_enviado(actual)
+        for tabla in ("facturas", "transferencias"):
+            for operacion in ("agregar", "quitar", "sustituir", "duplicar", "reordenar"):
+                with self.subTest(tabla=tabla, operacion=operacion):
+                    actual = frappe.get_doc("Lote de Pago", lote.name)
+                    filas = actual.get(tabla)
+                    if operacion == "agregar":
+                        actual.append(tabla, filas[0].as_dict())
+                    elif operacion == "quitar":
+                        filas.pop()
+                    elif operacion == "sustituir":
+                        filas[0].name = "FILA-NUEVA"
+                    elif operacion == "duplicar":
+                        filas[1].name = filas[0].name
+                    else:
+                        filas.reverse()
+                        for idx, fila in enumerate(filas, 1):
+                            fila.idx = idx
+                    with patch.object(actual, "get_doc_before_save", return_value=lote):
+                        with self.assertRaises(frappe.ValidationError):
+                            validar_cambios_del_lote_enviado(actual)
+
+    def test_guardia_sin_documento_previo_falla_cerrada(self):
+        lote = frappe.get_doc("Lote de Pago", self._lote_transmitido())
+        lote.flags.cambio_interno = True
+        with patch.object(lote, "get_doc_before_save", return_value=None):
+            with self.assertRaises(frappe.ValidationError):
+                validar_cambios_del_lote_enviado(lote)
+
+    def test_notas_admiten_fechas_serializadas_del_navegador(self):
+        lote = frappe.get_doc("Lote de Pago", self._lote_transmitido())
+        lote.fecha_pago = str(lote.fecha_pago)
+        lote.generado_el = str(lote.generado_el)
+        lote.transmitido_el = str(lote.transmitido_el)
+        lote.notas = "Acuse revisado por Tesorería"
+        lote.save()
+        self.assertEqual(frappe.db.get_value("Lote de Pago", lote.name, "notas"), lote.notas)

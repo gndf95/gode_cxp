@@ -21,16 +21,21 @@ REINTENTABLES = ("Parcial", "Rechazado")
 AUTORIZACION_BANCO = re.compile(r"\d{1,12}")
 
 
-def bloquear_facturas(nombres):
+def bloquear_facturas(nombres) -> dict[str, dict]:
     """Candado de fila (SELECT … FOR UPDATE) sobre las facturas que va a apartar un lote.
 
     Sin él, dos sesiones armando lotes a la vez pasan las dos validaciones y acaban con la misma
     factura en dos lotes autorizados: el archivo TEF se genera dos veces y el proveedor cobra dos
-    veces. El candado se toma ANTES de volver a leer `en_lote` y los lotes activos, y MariaDB lo
-    sostiene hasta el commit de la transacción."""
+    veces. Se devuelven los valores de la lectura con candado: una relectura con get_value usaría
+    el snapshot anterior de REPEATABLE READ. MariaDB sostiene el candado hasta el commit."""
     nombres = sorted({n for n in nombres if n})   # ordenados: dos sesiones no se abrazan
-    if nombres:
-        frappe.db.sql("select name from `tabPurchase Invoice` where name in %s for update", (nombres,))
+    if not nombres:
+        return {}
+    filas = frappe.db.sql("""select name, en_lote, outstanding_amount, docstatus, on_hold,
+                                   estado_revision, currency, company, supplier
+                            from `tabPurchase Invoice` where name in %s order by name for update""",
+                          (nombres,), as_dict=True)
+    return {fila.name: fila for fila in filas}
 
 
 def _conf():
@@ -179,9 +184,9 @@ def _siguiente_secuencial(fecha_pago):
                             where fecha_pago = %s for update""", (fecha_pago,))
     siguiente = int(fila[0][0] or 0) + 1
     if siguiente > MAX_SECUENCIAL:
-        frappe.throw(_("La fecha de pago {0} ya usó los {1} lotes que admite el banco (0001 a 00{1}): "
+        frappe.throw(_("La fecha de pago {0} ya usó los {1} lotes que admite el banco (0001 a {2}): "
                        "los que falten van con fecha de pago de otro día.")
-                     .format(getdate(fecha_pago).strftime("%d/%m/%Y"), MAX_SECUENCIAL))
+                     .format(getdate(fecha_pago).strftime("%d/%m/%Y"), MAX_SECUENCIAL, f"{MAX_SECUENCIAL:04d}"))
     return siguiente
 
 
@@ -282,7 +287,8 @@ def nuevo_lote_pendientes(lote_name):
     # que nadie las hubiera reintentado. `validar_lote` las acepta aunque sigan apuntando al lote
     # origen porque ese lote está en Parcial/Rechazado. Todo va en un savepoint: si algo truena, ni
     # el lote nuevo ni las facturas quedan a medias, tanto en una petición web como desde bench.
-    frappe.db.savepoint("gode_cxp_reintento")
+    savepoint = "reintento_" + frappe.generate_hash(length=8)
+    frappe.db.savepoint(savepoint)
     try:
         nuevo = frappe.new_doc("Lote de Pago")
         nuevo.update({"company": lote.company, "fecha_pago": today(), "naturaleza": lote.naturaleza,
@@ -299,6 +305,7 @@ def nuevo_lote_pendientes(lote_name):
                                               "folio": f.folio, "uuid": f.uuid, "importe": f.importe,
                                               "saldo_al_crear": frappe.db.get_value("Purchase Invoice", f.factura, "outstanding_amount")})
                     a_liberar.append(f.factura)
+        nuevo.flags.reintento_interno = True
         nuevo.insert()
         for factura in a_liberar:
             if frappe.db.get_value("Purchase Invoice", factura, "en_lote") == lote.name:
@@ -306,7 +313,7 @@ def nuevo_lote_pendientes(lote_name):
         for t in pendientes:
             t.db_set("reintentado_en", nuevo.name)
     except Exception:
-        frappe.db.rollback(save_point="gode_cxp_reintento")
+        frappe.db.rollback(save_point=savepoint)
         raise
-    frappe.db.release_savepoint("gode_cxp_reintento")
+    frappe.db.release_savepoint(savepoint)
     return nuevo.name

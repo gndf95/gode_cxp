@@ -154,6 +154,16 @@ def limpiar():
     # Red de seguridad: limpiar() borra CFDI y facturas en bloque, nunca debe tocar producción.
     if frappe.db.get_single_value("Configuracion CxP", "empresa") != EMPRESA:
         frappe.throw(f"limpiar() solo corre en el sitio de pruebas (Configuración CxP.empresa = {EMPRESA})")
+    # Un lote cancelado no se borra (conserva su secuencial): solo esta limpieza, ya pasada la red de
+    # seguridad de arriba, prende la bandera de servidor que el hook on_trash respeta.
+    frappe.flags.cxp_limpiando_pruebas = True
+    try:
+        _limpiar()
+    finally:
+        frappe.flags.cxp_limpiando_pruebas = False
+
+
+def _limpiar():
     proveedores = frappe.get_all("Supplier", filters={"tax_id": ["in", RFCS_PRUEBA]}, pluck="name")
     # --- lo que cuelga de las facturas se borra ANTES que ellas -----------------------------------
     # Al cancelar un Payment Entry, ERPNext le devuelve el saldo a la factura; al cancelar un Lote de

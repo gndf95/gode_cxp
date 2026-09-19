@@ -3,9 +3,11 @@
 Van como doc_events (hooks.py) y no como métodos del controlador para que corran igual si el lote se
 guarda a mano desde el formulario y si lo arma pagos/lotes.py.
 """
+from decimal import Decimal, InvalidOperation
+
 import frappe
 from frappe import _
-from frappe.utils import cstr, flt
+from frappe.utils import cstr, flt, get_datetime
 
 from gode_cxp.pagos.cuentas_bancarias import REGISTRADA, SIN_PREREGISTRO, validar_nombre_tef
 from gode_cxp.pagos.lotes import ACTIVOS, REINTENTABLES, bloquear_facturas
@@ -15,11 +17,8 @@ from gode_cxp.pagos.preregistro import exigir_preregistro
 CAMPOS_DE_ARCHIVO = ("secuencial", "nombre_archivo", "archivo_tef", "generado_el", "transmitido_el",
                      "autorizacion_banco")
 CAMPOS_DE_PAGO = ("linea_tef", "pago", "clave_rastreo", "motivo_rechazo", "reintentado_en")
-# Lo que en un lote ya autorizado sólo escribe el código (siempre con db_set, que no pasa por save):
-# el estado, el archivo que se mandó al banco y todo lo que dice cuánto se paga y a quién.
-BLINDADOS = (*CAMPOS_DE_ARCHIVO, "estado_lote", "total_lote")
-BLINDADOS_TRANSFERENCIA = (*CAMPOS_DE_PAGO, "estado_pago", "importe", "cuenta_bancaria",
-                           "beneficiario_tef", "cuenta_tef")
+# Sólo las notas y la auditoría de Frappe pueden cambiar al guardar un lote enviado.
+EDITABLES = {"notas", "modified", "modified_by", "_user_tags", "_comments", "_assign", "_liked_by"}
 # Estados desde los que sí se cancela: el archivo puede estar generado, pero no se subió al banco.
 CANCELABLES = ("Autorizado", "Exportado")
 
@@ -44,60 +43,84 @@ def _nace_limpio(doc):
             t.set(campo, None)
 
 
-def _cambio(antes, ahora):
-    """¿Cambió el valor? Tolera None contra "" y compara los importes con la precisión del peso."""
-    if isinstance(antes, int | float) or isinstance(ahora, int | float):
-        return abs(flt(antes) - flt(ahora)) > 0.005
+def _cambio(antes, ahora, tipo=None):
+    """Normaliza fechas del navegador sin tolerar cambios pequeños en campos protegidos."""
+    if tipo in ("Date", "Datetime") and antes and ahora:
+        try:
+            return get_datetime(antes) != get_datetime(ahora)
+        except (ValueError, TypeError, OverflowError):
+            return True
+    if isinstance(antes, int | float | Decimal) or isinstance(ahora, int | float | Decimal):
+        # flt convierte texto inválido a cero; aquí eso abriría un campo protegido cuyo valor era 0.
+        try:
+            return Decimal(cstr(antes) or "0") != Decimal(cstr(ahora) or "0")
+        except InvalidOperation:
+            return True
     return cstr(antes) != cstr(ahora)
 
 
-def validar_cambios_del_lote_enviado(doc, method=None):
-    """Guardia de servidor de los campos que mueven dinero en un lote ya autorizado.
+def _validar_campos_blindados(antes, ahora, tablas=()):
+    # La unión incluye campos nuevos del DocType: ninguno queda abierto por omisión.
+    campos = set(antes.as_dict()) | set(ahora.as_dict())
+    for campo in campos - EDITABLES - set(tablas):
+        df = ahora.meta.get_field(campo)
+        if _cambio(antes.get(campo), ahora.get(campo), df.fieldtype if df else None):
+            frappe.throw(_("'{0}' de un lote autorizado no se edita a mano.")
+                         .format(ahora.meta.get_label(campo) or campo))
 
-    `read_only` es del formulario y `allow_on_submit` abre la escritura a cualquiera que pueda
-    guardar el documento, así que el candado de verdad es este. Va en `before_update_after_submit`
-    porque el hook `validate` NO se dispara al guardar un documento enviado (Frappe 15,
-    frappe/model/document.py::run_before_save_methods sólo corre `before_update_after_submit`).
-    Las funciones de pagos/lotes.py escriben con `db_set`, que no pasa por `save()`, así que no
-    necesitan el escape `doc.flags.cambio_interno`."""
-    if doc.flags.cambio_interno:
-        return
+
+def validar_cambios_del_lote_enviado(doc, method=None):
+    """El formulario no protege el dinero: esta guardia también cubre guardados por API.
+
+    Los botones internos usan db_set; no necesitan saltarse la guardia de save().
+    """
     antes = doc.get_doc_before_save()
     if not antes:
-        return
-    for campo in BLINDADOS:
-        if _cambio(antes.get(campo), doc.get(campo)):
-            frappe.throw(_("'{0}' de un lote autorizado no se edita a mano: lo mueven los botones del "
-                           "lote (generar archivo, marcar transmitido, capturar el resultado del banco).")
-                         .format(doc.meta.get_label(campo)))
-    if len(doc.transferencias) != len(antes.transferencias) or len(doc.facturas) != len(antes.facturas):
-        frappe.throw(_("A un lote autorizado no se le agregan ni se le quitan transferencias ni "
-                       "facturas: cancélalo y arma otro (si todavía no se subió al banco)."))
-    previas = {t.name: t for t in antes.transferencias}
-    for t in doc.transferencias:
-        vieja = previas.get(t.name)
-        if not vieja:
-            frappe.throw(_("A un lote autorizado no se le agregan transferencias."))
-        for campo in BLINDADOS_TRANSFERENCIA:
-            if _cambio(vieja.get(campo), t.get(campo)):
-                frappe.throw(_("Transferencia {0} ({1}): '{2}' de un lote autorizado no se edita a mano.")
-                             .format(t.idx, t.proveedor, t.meta.get_label(campo)))
+        frappe.throw(_("No se pudo leer el lote anterior: no se permiten cambios al lote autorizado."))
+    tablas = ("transferencias", "facturas")
+    _validar_campos_blindados(antes, doc, tablas)
+    for tabla in tablas:
+        if not antes.get(tabla) or not doc.get(tabla):
+            frappe.throw(_("No se pueden validar las filas de {0} del lote autorizado.").format(tabla))
+        previas = {fila.name: fila for fila in antes.get(tabla)}
+        actuales = {fila.name: fila for fila in doc.get(tabla)}
+        if (not all(previas) or not all(actuales) or set(previas) != set(actuales)
+                or len(previas) != len(antes.get(tabla)) or len(actuales) != len(doc.get(tabla))):
+            frappe.throw(_("A un lote autorizado no se le agregan ni se le quitan filas de {0}.").format(tabla))
+        for nombre, fila in actuales.items():
+            # idx también queda blindado: cambiarlo reasignaría facturas a otra transferencia.
+            _validar_campos_blindados(previas[nombre], fila)
+
+
+def _facturas_reintentables(lote_origen, este_lote) -> set[str]:
+    if not lote_origen:
+        return set()
+    # Una lectura actual incluye tanto el resultado del banco como el destino del reintento.
+    filas = frappe.db.sql("""select lf.factura from `tabLote de Pago Factura` lf
+                            join `tabLote de Pago Transferencia` lt
+                              on lf.parent = lt.parent and lf.transferencia = lt.idx
+                            join `tabLote de Pago` l on l.name = lf.parent
+                            where lf.parent = %s and l.estado_lote in %s
+                              and lt.estado_pago in ('Pendiente', 'Rechazado', 'Devuelto')
+                              and (coalesce(lt.reintentado_en, '') = '' or lt.reintentado_en = %s)
+                            for update""", (lote_origen, REINTENTABLES, este_lote or ""))
+    return {fila[0] for fila in filas}
 
 
 def validar_lote(doc, method=None):
     if doc.is_new():
+        if doc.lote_origen and not doc.flags.reintento_interno:
+            frappe.throw(_("El lote origen sólo se asigna desde Nuevo lote con los pendientes."))
         _nace_limpio(doc)
+    elif cstr(doc.lote_origen) != cstr(frappe.db.get_value("Lote de Pago", doc.name, "lote_origen")):
+        frappe.throw(_("El lote origen no se modifica a mano."))
     if doc.naturaleza not in ("06", "12"):
         frappe.throw(_("El lote necesita naturaleza 06 o 12."))
     if not doc.transferencias or not doc.facturas:
         frappe.throw(_("El lote necesita al menos una transferencia con facturas."))
-    # Candado de fila sobre las facturas ANTES de volver a leer en_lote y los lotes activos: otra
-    # sesión no puede colarse entre la validación y el submit.
-    bloquear_facturas([f.factura for f in doc.facturas])
-    # Un lote de reintento nace con las facturas todavía apuntando a su lote origen (que ya está en
-    # Parcial/Rechazado, o sea fuera de ACTIVOS): esas sí pueden entrar.
-    estado_origen = frappe.db.get_value("Lote de Pago", doc.lote_origen, "estado_lote") if doc.lote_origen else None
-    origen_libera = estado_origen in REINTENTABLES
+    # FOR UPDATE devuelve la versión actual; get_value volvería al snapshot de REPEATABLE READ.
+    facturas = bloquear_facturas([f.factura for f in doc.facturas])
+    reintentables = _facturas_reintentables(doc.lote_origen, doc.name)
     idx_validos = {t.idx for t in doc.transferencias}
     suma_por_transferencia = {}
     suma_por_factura = {}
@@ -110,9 +133,7 @@ def validar_lote(doc, method=None):
         suma_por_factura[f.factura] = flt(f.importe)
         if f.transferencia not in idx_validos:
             frappe.throw(_("La factura {0} apunta a una transferencia inexistente.").format(f.factura))
-        pi = frappe.db.get_value("Purchase Invoice", f.factura,
-                                 ["docstatus", "estado_revision", "on_hold", "outstanding_amount", "currency",
-                                  "supplier", "en_lote", "company"], as_dict=True)
+        pi = facturas.get(f.factura)
         if not pi or pi.docstatus != 1 or pi.estado_revision != "Aprobada" or pi.on_hold:
             frappe.throw(_("La factura {0} no está aprobada (o está en espera).").format(f.factura))
         if pi.currency != "MXN" or pi.company != doc.company:
@@ -120,12 +141,13 @@ def validar_lote(doc, method=None):
         if flt(suma_por_factura[f.factura]) <= 0 or flt(suma_por_factura[f.factura]) > flt(pi.outstanding_amount) + 0.005:
             frappe.throw(_("Importe inválido para {0}: {1} (saldo {2}).")
                          .format(f.factura, suma_por_factura[f.factura], pi.outstanding_amount))
-        if pi.en_lote and pi.en_lote != doc.name and not (origen_libera and pi.en_lote == doc.lote_origen):
+        if pi.en_lote and pi.en_lote != doc.name and not (pi.en_lote == doc.lote_origen and f.factura in reintentables):
             frappe.throw(_("La factura {0} ya está en el lote {1}.").format(f.factura, pi.en_lote))
-        # Un lote Preparado (borrador) todavía no escribió en_lote, así que hay que mirar sus filas.
+        # Los borradores aún no escriben en_lote. El join lee con candado para ver lotes
+        # recién confirmados y no el snapshot anterior de REPEATABLE READ.
         otro = frappe.db.sql("""select lf.parent from `tabLote de Pago Factura` lf
                                 join `tabLote de Pago` l on l.name = lf.parent
-                                where lf.factura = %s and lf.parent != %s and l.estado_lote in %s""",
+                                where lf.factura = %s and lf.parent != %s and l.estado_lote in %s for update""",
                              (f.factura, doc.name or "", ACTIVOS))
         if otro:
             frappe.throw(_("La factura {0} ya está en el lote {1}.").format(f.factura, otro[0][0]))
@@ -165,10 +187,14 @@ def al_autorizar(doc, method=None):
     """Submit = Tesorería autoriza. Aquí se apartan las facturas (en_lote); el saldo no se toca."""
     # Se vuelve a tomar el candado y a comprobar `en_lote` DESPUÉS de tenerlo: si otra sesión apartó
     # alguna factura, el submit se aborta antes de escribir nada.
-    bloquear_facturas([f.factura for f in doc.facturas])
+    facturas = bloquear_facturas([f.factura for f in doc.facturas])
+    reintentables = _facturas_reintentables(doc.lote_origen, doc.name)
     for f in doc.facturas:
-        en_lote = frappe.db.get_value("Purchase Invoice", f.factura, "en_lote")
-        if en_lote and en_lote not in (doc.name, doc.lote_origen):
+        pi = facturas.get(f.factura)
+        if not pi:
+            frappe.throw(_("No existe la factura {0}.").format(f.factura))
+        en_lote = pi.en_lote
+        if en_lote and en_lote != doc.name and not (en_lote == doc.lote_origen and f.factura in reintentables):
             frappe.throw(_("La factura {0} la acaba de apartar el lote {1}: vuelve a armar este lote.")
                          .format(f.factura, en_lote))
     doc.db_set("estado_lote", "Autorizado")
@@ -192,3 +218,13 @@ def al_cancelar(doc, method=None):
     for f in doc.facturas:
         if frappe.db.get_value("Purchase Invoice", f.factura, "en_lote") == doc.name:
             frappe.db.set_value("Purchase Invoice", f.factura, "en_lote", None)
+
+
+def antes_de_borrar(doc, method=None):
+    # Incluso cancelado conserva su secuencial: borrarlo permitiría reutilizarlo.
+    # frappe.flags vive solo en el servidor: la limpieza de las pruebas (pruebas_comun.limpiar, que además
+    # exige estar en la empresa de pruebas) es la única que lo prende.
+    if frappe.flags.cxp_limpiando_pruebas:
+        return
+    if doc.docstatus != 0:
+        frappe.throw(_("Sólo se pueden borrar lotes en borrador; los enviados y cancelados conservan su historial."))

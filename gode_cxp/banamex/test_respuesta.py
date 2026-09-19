@@ -168,11 +168,15 @@ class TestLectura(unittest.TestCase):
             leer_respuesta(b"Importe,Estatus\n,3\n", "x.csv")
 
     def test_un_importe_con_coma_decimal_no_se_adivina(self):
-        """'3.275,10' son 3275.10 en Europa y 327510 si se le quitan las comas: no se adivina."""
-        for crudo in (b"3.275,10", b"3275,10", b"1,5"):
-            with self.subTest(crudo=crudo):
+        """'3.275,10' son 3275.10 en Europa y 327510 si se le quitan las comas: no se adivina.
+
+        Los dos archivos en que puede llegar: separado por punto y coma (donde la coma decimal va
+        suelta) y separado por comas (donde tiene que venir entre comillas)."""
+        for archivo in (b"Importe;Estatus\n3.275,10;3\n", b"Importe;Estatus\n3275,10;3\n",
+                        b"Importe;Estatus\n1,5;3\n", b'Importe,Estatus\n"3.275,10",3\n'):
+            with self.subTest(archivo=archivo):
                 with self.assertRaisesRegex(RespuestaInvalida, "coma"):
-                    leer_respuesta(b"Importe,Estatus\n" + crudo + b",3\n", "x.csv")
+                    leer_respuesta(archivo, "x.csv")
 
     def test_el_separador_de_miles_si_se_entiende(self):
         r = leer_respuesta(b'Importe,Estatus\n"13,265.00",3\n', "x.csv")

@@ -1,0 +1,37 @@
+{
+ "doctype": "DocType",
+ "name": "Lote de Pago Transferencia",
+ "module": "Cuentas por Pagar",
+ "istable": 1,
+ "engine": "InnoDB",
+ "editable_grid": 1,
+ "field_order": [
+  "proveedor",
+  "cuenta_bancaria",
+  "beneficiario_tef",
+  "cuenta_tef",
+  "importe",
+  "linea_tef",
+  "estado_pago",
+  "clave_rastreo",
+  "motivo_rechazo",
+  "pago",
+  "reintentado_en"
+ ],
+ "fields": [
+  {"fieldname": "proveedor", "fieldtype": "Link", "label": "Proveedor", "options": "Supplier", "reqd": 1, "in_list_view": 1, "columns": 2},
+  {"fieldname": "cuenta_bancaria", "fieldtype": "Link", "label": "Cuenta bancaria", "options": "Bank Account", "reqd": 1},
+  {"fieldname": "beneficiario_tef", "fieldtype": "Data", "label": "Beneficiario en el archivo", "length": 55, "in_list_view": 1, "columns": 3},
+  {"fieldname": "cuenta_tef", "fieldtype": "Data", "label": "Cuenta en el archivo", "length": 20, "in_list_view": 1, "columns": 2, "description": "CLABE (naturaleza 12) o sucursal + cuenta Banamex (naturaleza 06)"},
+  {"fieldname": "importe", "fieldtype": "Currency", "label": "Importe", "reqd": 1, "in_list_view": 1, "columns": 2},
+  {"fieldname": "linea_tef", "fieldtype": "Int", "label": "Línea del archivo", "read_only": 1},
+  {"fieldname": "estado_pago", "fieldtype": "Select", "label": "Estado del pago", "options": "Pendiente\nAplicado\nRechazado\nDevuelto", "default": "Pendiente", "in_list_view": 1, "columns": 1, "allow_on_submit": 1},
+  {"fieldname": "clave_rastreo", "fieldtype": "Data", "label": "Clave de rastreo", "allow_on_submit": 1},
+  {"fieldname": "motivo_rechazo", "fieldtype": "Data", "label": "Motivo del rechazo", "allow_on_submit": 1},
+  {"fieldname": "pago", "fieldtype": "Link", "label": "Pago", "options": "Payment Entry", "read_only": 1, "allow_on_submit": 1},
+  {"fieldname": "reintentado_en", "fieldtype": "Link", "label": "Reintentado en", "options": "Lote de Pago", "read_only": 1, "allow_on_submit": 1}
+ ],
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}

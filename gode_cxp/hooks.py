@@ -25,6 +25,14 @@ doc_events = {
     # Las cuentas bancarias de proveedor son las que alimentan el archivo TEF: la CLABE, la
     # naturaleza del pago y el nombre del beneficiario se validan aquí, no en el formulario.
     "Bank Account": {"validate": "gode_cxp.pagos.cuentas_bancarias.validar_cuenta_bancaria"},
+    # El lote de pago aparta las facturas al autorizarse (submit) y las libera al cancelarse. Las
+    # reglas van en doc_events para que también corran si alguien guarda el lote desde el formulario.
+    "Lote de Pago": {
+        "validate": "gode_cxp.pagos.eventos.validar_lote",
+        "on_submit": "gode_cxp.pagos.eventos.al_autorizar",
+        "before_cancel": "gode_cxp.pagos.eventos.antes_de_cancelar",
+        "on_cancel": "gode_cxp.pagos.eventos.al_cancelar",
+    },
 }
 
 doctype_js = {"Bank Account": "public/js/bank_account.js"}

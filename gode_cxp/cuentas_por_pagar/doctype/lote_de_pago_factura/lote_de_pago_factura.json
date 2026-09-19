@@ -1,0 +1,29 @@
+{
+ "doctype": "DocType",
+ "name": "Lote de Pago Factura",
+ "module": "Cuentas por Pagar",
+ "istable": 1,
+ "engine": "InnoDB",
+ "editable_grid": 1,
+ "field_order": [
+  "transferencia",
+  "proveedor",
+  "factura",
+  "folio",
+  "uuid",
+  "saldo_al_crear",
+  "importe"
+ ],
+ "fields": [
+  {"fieldname": "transferencia", "fieldtype": "Int", "label": "Transferencia", "reqd": 1, "description": "Número de fila (idx) de la transferencia del lote que cubre esta factura"},
+  {"fieldname": "proveedor", "fieldtype": "Link", "label": "Proveedor", "options": "Supplier", "read_only": 1},
+  {"fieldname": "factura", "fieldtype": "Link", "label": "Factura", "options": "Purchase Invoice", "reqd": 1, "in_list_view": 1, "columns": 3},
+  {"fieldname": "folio", "fieldtype": "Data", "label": "Folio del proveedor", "read_only": 1},
+  {"fieldname": "uuid", "fieldtype": "Data", "label": "UUID", "length": 36, "read_only": 1},
+  {"fieldname": "saldo_al_crear", "fieldtype": "Currency", "label": "Saldo al armar el lote", "read_only": 1},
+  {"fieldname": "importe", "fieldtype": "Currency", "label": "Importe a pagar", "reqd": 1, "in_list_view": 1, "columns": 2}
+ ],
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}

@@ -11,14 +11,48 @@ from gode_cxp.pagos.cuentas_bancarias import validar_nombre_tef
 from gode_cxp.pagos.lotes import ACTIVOS
 
 
+CAMPOS_DE_ARCHIVO = ("secuencial", "nombre_archivo", "archivo_tef", "generado_el", "transmitido_el",
+                     "autorizacion_banco")
+CAMPOS_DE_PAGO = ("linea_tef", "pago", "clave_rastreo", "motivo_rechazo", "reintentado_en")
+
+
+def _nace_limpio(doc):
+    """Un lote nuevo no hereda nada de lo que ya se mandó al banco.
+
+    Los campos llevan `no_copy`, pero el botón 'Amend' del escritorio lo ignora
+    (frappe/public/js/frappe/model/create_new.js: `!from_amend && df.no_copy`), así que la enmienda de
+    un lote cancelado llegaría con su secuencial, su archivo y su estado. Misma técnica que
+    facturas/eventos.py con las enmiendas de factura."""
+    for campo in CAMPOS_DE_ARCHIVO:
+        doc.set(campo, None)
+    doc.estado_lote = "Preparado"
+    # `lote_origen` sólo se limpia en una enmienda: nuevo_lote_pendientes lo pone a propósito en el
+    # lote de reintento y es el único rastro de dónde viene.
+    if doc.get("amended_from"):
+        doc.lote_origen = None
+    for t in doc.transferencias:
+        t.estado_pago = "Pendiente"
+        for campo in CAMPOS_DE_PAGO:
+            t.set(campo, None)
+
+
 def validar_lote(doc, method=None):
+    if doc.is_new():
+        _nace_limpio(doc)
     if doc.naturaleza not in ("06", "12"):
         frappe.throw(_("El lote necesita naturaleza 06 o 12."))
     if not doc.transferencias or not doc.facturas:
         frappe.throw(_("El lote necesita al menos una transferencia con facturas."))
     idx_validos = {t.idx for t in doc.transferencias}
     suma_por_transferencia = {}
+    suma_por_factura = {}
     for f in doc.facturas:
+        # Una factura sólo puede aparecer UNA vez: dos filas de la misma factura se comparaban cada
+        # una contra el saldo completo, así que dos veces 600 de una factura de 1000 pasaban.
+        if f.factura in suma_por_factura:
+            frappe.throw(_("La factura {0} aparece dos veces en el lote: junta lo que le vas a pagar "
+                           "en una sola fila.").format(f.factura))
+        suma_por_factura[f.factura] = flt(f.importe)
         if f.transferencia not in idx_validos:
             frappe.throw(_("La factura {0} apunta a una transferencia inexistente.").format(f.factura))
         pi = frappe.db.get_value("Purchase Invoice", f.factura,
@@ -28,8 +62,9 @@ def validar_lote(doc, method=None):
             frappe.throw(_("La factura {0} no está aprobada (o está en espera).").format(f.factura))
         if pi.currency != "MXN" or pi.company != doc.company:
             frappe.throw(_("La factura {0} no es MXN de {1}.").format(f.factura, doc.company))
-        if flt(f.importe) <= 0 or flt(f.importe) > flt(pi.outstanding_amount) + 0.005:
-            frappe.throw(_("Importe inválido para {0}: {1} (saldo {2}).").format(f.factura, f.importe, pi.outstanding_amount))
+        if flt(suma_por_factura[f.factura]) <= 0 or flt(suma_por_factura[f.factura]) > flt(pi.outstanding_amount) + 0.005:
+            frappe.throw(_("Importe inválido para {0}: {1} (saldo {2}).")
+                         .format(f.factura, suma_por_factura[f.factura], pi.outstanding_amount))
         if pi.en_lote and pi.en_lote != doc.name:
             frappe.throw(_("La factura {0} ya está en el lote {1}.").format(f.factura, pi.en_lote))
         # Un lote Preparado (borrador) todavía no escribió en_lote, así que hay que mirar sus filas.

@@ -8,7 +8,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate, now_datetime, today
 
-from gode_cxp.pagos.tef import TefInvalido, generar_tef, nombre_archivo
+from gode_cxp.pagos.tef import MAX_SECUENCIAL, TefInvalido, generar_tef, nombre_archivo
 
 # Estados en los que un lote todavía "aparta" sus facturas: mientras el lote esté en uno de ellos,
 # ninguna de sus facturas puede entrar a otro lote.
@@ -74,11 +74,18 @@ def crear_lotes(company, fecha_pago, partidas):
         frappe.throw(_("No se eligió ninguna factura."))
     fecha_pago = getdate(fecha_pago)
     por_transferencia = {}   # (proveedor, cuenta) -> {"cuenta": dict, "facturas": [...]}
+    vistas = set()
     for p in partidas:
         pi = frappe.db.get_value("Purchase Invoice", p["factura"],
                                  ["name", "supplier", "bill_no", "cfdi_uuid", "outstanding_amount"], as_dict=True)
         if not pi:
             frappe.throw(_("No existe la factura {0}.").format(p["factura"]))
+        # Dos partidas de la misma factura se sumaban en una sola transferencia y nadie comparaba el
+        # total contra el saldo: el proveedor cobraba dos veces.
+        if pi.name in vistas:
+            frappe.throw(_("La factura {0} aparece dos veces en la selección: junta lo que le vas a "
+                           "pagar en una sola partida.").format(pi.name))
+        vistas.add(pi.name)
         cuenta = _cuenta_del_proveedor(pi.supplier)
         clave = (pi.supplier, cuenta.name)
         por_transferencia.setdefault(clave, {"cuenta": cuenta, "facturas": []})["facturas"].append(
@@ -107,10 +114,20 @@ def crear_lotes(company, fecha_pago, partidas):
 
 
 def _siguiente_secuencial(fecha_pago):
-    # FOR UPDATE: dos usuarios generando a la vez el mismo día no deben tomar el mismo número.
+    """El siguiente número de lote del día. Un secuencial ya usado NO se reutiliza nunca.
+
+    Se cuentan todos los lotes de la fecha, cancelados incluidos: un lote que llegó a tener
+    secuencial ya generó su archivo y pudo subirse a BancaNet, así que volver a repartir ese número
+    mandaría dos archivos distintos con el mismo identificador de lote.
+    FOR UPDATE: dos usuarios generando a la vez el mismo día no deben tomar el mismo número."""
     fila = frappe.db.sql("""select max(secuencial) from `tabLote de Pago`
-                            where fecha_pago = %s and estado_lote != 'Cancelado' for update""", (fecha_pago,))
-    return int(fila[0][0] or 0) + 1
+                            where fecha_pago = %s for update""", (fecha_pago,))
+    siguiente = int(fila[0][0] or 0) + 1
+    if siguiente > MAX_SECUENCIAL:
+        frappe.throw(_("La fecha de pago {0} ya usó los {1} lotes que admite el banco (0001 a 00{1}): "
+                       "los que falten van con fecha de pago de otro día.")
+                     .format(getdate(fecha_pago).strftime("%d/%m/%Y"), MAX_SECUENCIAL))
+    return siguiente
 
 
 def _lote_como_dict(lote, conf):

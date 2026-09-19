@@ -6,6 +6,8 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 FIN = b"\r\n"
 L1, L2, L3, L4 = 124, 69, 217, 52
+# Lotes por día que admite BancaNet Empresarial: 0001 a 0099.
+MAX_SECUENCIAL = 99
 # El punto está permitido porque aparece en un beneficiario del archivo que Banamex aceptó
 # ('DISTRIBUIDORA,DE ALIMENTOS P.B. SA DE CV/', línea 7 de PAGOS2.txt). Ojo: la validación de
 # pagos.cuentas_bancarias.validar_nombre_tef es más estricta y sí lo rechaza; aquí el criterio es
@@ -80,8 +82,11 @@ def _validar_lote(lote):
         secuencial = int(lote.get("secuencial") or 0)
     except (ValueError, TypeError):
         raise TefInvalido(f"secuencial inválido: {lote.get('secuencial')!r}")
-    if not 1 <= secuencial <= 9999:
-        raise TefInvalido("secuencial fuera de rango (1-9999)")
+    # El campo del archivo tiene 4 posiciones, pero BancaNet Empresarial sólo admite los lotes 0001
+    # a 0099 de cada día: un 0100 lo rechaza el banco completo.
+    if not 1 <= secuencial <= MAX_SECUENCIAL:
+        raise TefInvalido(f"secuencial fuera de rango (1-{MAX_SECUENCIAL}: el banco sólo admite "
+                          f"0001 a 00{MAX_SECUENCIAL} por día)")
     if not re.fullmatch(r"\d{1,12}", str(lote.get("contrato", ""))):
         raise TefInvalido("contrato inválido")
     if not re.fullmatch(r"\d{4}", str(lote.get("sucursal_cargo", ""))) or not re.fullmatch(r"\d{1,20}", str(lote.get("cuenta_cargo", ""))):

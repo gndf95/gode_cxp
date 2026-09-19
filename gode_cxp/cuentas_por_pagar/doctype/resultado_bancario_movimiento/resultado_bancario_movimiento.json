@@ -26,9 +26,9 @@
   {"fieldname": "estatus", "fieldtype": "Select", "label": "Estatus", "options": "\n3\n5", "in_list_view": 1, "columns": 1, "description": "Lo que dijo el banco de esta transferencia: 3 = aplicada, 5 = rechazada"},
   {"fieldname": "clave_rastreo", "fieldtype": "Data", "label": "Clave de rastreo", "length": 40, "in_list_view": 1, "columns": 2},
   {"fieldname": "autorizacion", "fieldtype": "Data", "label": "Autorización", "length": 12, "description": "El número de autorización que el banco devolvió para esta transferencia"},
-  {"fieldname": "motivo", "fieldtype": "Data", "label": "Motivo", "description": "Número y mensaje de error del banco cuando la transferencia se rechazó"},
+  {"fieldname": "motivo", "fieldtype": "Small Text", "label": "Motivo", "description": "Número y mensaje de error del banco cuando la transferencia se rechazó"},
   {"fieldname": "transferencia_idx", "fieldtype": "Int", "label": "Transferencia del lote", "read_only": 1, "description": "Con qué transferencia del lote se cruzó este movimiento (se calcula al guardar)"},
-  {"fieldname": "accion", "fieldtype": "Select", "label": "Acción", "options": "\nPago creado\nYa aplicado\nRechazado\nSin coincidencia\nImporte distinto", "read_only": 1, "no_copy": 1, "in_list_view": 1, "columns": 2},
+  {"fieldname": "accion", "fieldtype": "Select", "label": "Acción", "options": "\nPago creado\nYa aplicado\nRechazado\nSin coincidencia\nImporte distinto\nError al pagar", "read_only": 1, "no_copy": 1, "in_list_view": 1, "columns": 2},
   {"fieldname": "pago", "fieldtype": "Link", "label": "Pago", "options": "Payment Entry", "read_only": 1, "no_copy": 1}
  ],
  "permissions": [],

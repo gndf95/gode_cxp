@@ -7,7 +7,7 @@ Formatos del banco: frappe-hr-ops/docs/banamex-formatos.md.
 import frappe
 from erpnext.accounts.party import get_party_account
 from frappe import _
-from frappe.utils import flt, now_datetime
+from frappe.utils import flt, getdate, now_datetime, today
 
 from gode_cxp.banamex.respuesta import CANCELADO, RECHAZADO, RespuestaInvalida, leer_respuesta
 from gode_cxp.pagos.lotes import _sql_con_candado
@@ -126,6 +126,11 @@ def _guardia_de_lo_aplicado(doc):
             frappe.throw(_("'{0}' lo escribe la aplicación de los pagos del banco, no se cambia a "
                            "mano (decía '{1}' y se intentó dejar '{2}').")
                          .format(_(doc.meta.get_label(campo)), antes.get(campo) or "", doc.get(campo) or ""))
+    if antes.aplicado_el:
+        for campo in ("lote", "estatus_archivo"):
+            if _distinto(doc.get(campo), antes.get(campo)):
+                frappe.throw(_("El resultado ya se aplicó: no se puede cambiar '{0}'.")
+                             .format(_(doc.meta.get_label(campo))))
     previos = {m.name: m for m in antes.movimientos}
     for m in doc.movimientos:
         viejo = previos.get(m.name)
@@ -226,7 +231,7 @@ def validar_resultado(doc, method=None):
                                .format(m.linea, m.importe, t.importe))
     doc.diferencias = "\n".join(diferencias)
     # 'Aplicado' y 'Revisado' los pone una persona o la creación de los pagos: guardar no los deshace.
-    if doc.estado not in ("Aplicado", "Revisado"):
+    if not doc.aplicado_el and doc.estado not in ("Aplicado", "Revisado"):
         doc.estado = "Con diferencias" if diferencias else "Importado"
 
 
@@ -293,6 +298,9 @@ def _crear_pago(lote, t, facturas, m, conf, autorizacion):
     `set_missing_values()` aparte: `PaymentEntry.validate` ya lo corre (con
     `setup_party_account_field()` antes, que es quien deja `party_account_field` en su sitio), así que
     las monedas y los tipos de cambio los llena `insert()`."""
+    if not facturas or abs(sum(flt(f.importe) for f in facturas) - flt(t.importe)) > TOLERANCIA:
+        frappe.throw(_("Las asignaciones a facturas deben sumar el importe de la transferencia {0}; "
+                       "no se puede crear un pago sin facturas o con importes distintos.").format(t.idx))
     pe = frappe.new_doc("Payment Entry")
     pe.update({"payment_type": "Pay", "party_type": "Supplier", "party": t.proveedor,
                "company": lote.company, "posting_date": lote.fecha_pago,
@@ -312,15 +320,16 @@ def _crear_pago(lote, t, facturas, m, conf, autorizacion):
     return pe
 
 
-def _liberar_facturas_con_saldo(lote):
-    """Un lote Aplicado completo ya no aparta nada: las facturas que quedaron con saldo (porque el
-    lote pagaba sólo una parte) tienen que poder entrar a otro lote. Las que quedaron en cero se
-    quedan con su `en_lote` como rastro de con qué lote se pagaron."""
+def _liberar_facturas_con_saldo(lote, transferencia=None):
+    """Cada transferencia pagada libera su saldo restante para otro lote; al cerrar el lote se
+    repite para todas como respaldo. Las facturas en cero conservan el rastro de su lote."""
     for f in lote.facturas:
-        datos = frappe.db.get_value("Purchase Invoice", f.factura, ["outstanding_amount", "en_lote"],
-                                    as_dict=True)
-        if datos and flt(datos.outstanding_amount) > TOLERANCIA and datos.en_lote == lote.name:
-            frappe.db.set_value("Purchase Invoice", f.factura, "en_lote", None)
+        if transferencia is not None and f.transferencia != transferencia:
+            continue
+        # El UPDATE condicional comprueba el dueño actual, incluso con un snapshot anterior.
+        frappe.db.sql("""update `tabPurchase Invoice` set en_lote = NULL
+                         where name = %s and en_lote = %s and outstanding_amount > 0""",
+                      (f.factura, lote.name))
 
 
 def recalcular_estado_lote(lote_name):
@@ -332,7 +341,10 @@ def recalcular_estado_lote(lote_name):
     Se escribe con `db_set`: `estado_lote` está blindado contra `save()` en un lote enviado
     (pagos/eventos.validar_cambios_del_lote_enviado)."""
     lote = frappe.get_doc("Lote de Pago", lote_name)
-    estados = {t.estado_pago for t in lote.transferencias}
+    estados = {t.estado_pago for t in _sql_con_candado(
+        """select estado_pago from `tabLote de Pago Transferencia`
+           where parent = %s and parenttype = 'Lote de Pago' order by idx for update""",
+        (lote.name,), as_dict=True)}
     if estados == {"Aplicado"}:
         nuevo = "Aplicado"
     elif "Aplicado" in estados:
@@ -366,7 +378,36 @@ def aplicar_resultado(resultado_name):
     # leerían las dos 'Pendiente' y crearían dos pagos. Con el candado la segunda espera a la primera
     # —o MariaDB rechaza su FOR UPDATE y el helper lo dice en español—, y después vuelve a leer.
     _sql_con_candado("select name from `tabLote de Pago` where name = %s for update", (lote.name,))
+    estados = {t.idx: t for t in _sql_con_candado(
+        """select name, idx, estado_pago, pago, reintentado_en from `tabLote de Pago Transferencia`
+           where parent = %s and parenttype = 'Lote de Pago' order by idx for update""",
+        (lote.name,), as_dict=True)}
+    # reload por sí solo conserva el snapshot de REPEATABLE READ. Las lecturas con candado
+    # aportan también el modified y los movimientos actuales para guardar y cruzar sin pisarlos.
+    actuales = _sql_con_candado(
+        "select * from `tabResultado Bancario` where name = %s for update", (r.name,), as_dict=True)
+    movimientos = _sql_con_candado(
+        """select * from `tabResultado Bancario Movimiento`
+           where parent = %s and parenttype = 'Resultado Bancario' order by idx for update""",
+        (r.name,), as_dict=True)
+    r.reload()
+    r.update(actuales[0])
+    r.set("movimientos", movimientos)
+    if r.lote != lote.name:
+        frappe.throw(_("Otra persona cambió el lote del resultado: vuelve a abrirlo e inténtalo de nuevo."))
     lote.reload()
+    if r.estatus_archivo in (RECHAZADO, CANCELADO):
+        diferencias = [_("el archivo está rechazado/cancelado por el banco pero la línea {0} viene "
+                         "como aplicada").format(m.linea) for m in r.movimientos if m.estatus == "3"]
+        frappe.throw("\n".join(diferencias) or _("El archivo está rechazado/cancelado por el banco: "
+                                                "no se pueden crear pagos."))
+    if r.estado not in ("Importado", "Revisado", "Con diferencias"):
+        frappe.throw(_("Solo se aplica un resultado Importado, Revisado o Con diferencias; está en '{0}'.")
+                     .format(r.estado))
+    if r.estado == "Con diferencias" and not any(m.pago for m in r.movimientos):
+        frappe.throw(_("El resultado tiene diferencias: usa Marcar revisado antes de aplicar los pagos."))
+    if getdate(lote.fecha_pago) > getdate(today()):
+        frappe.throw(_("La fecha del lote es futura: el pago aún no ocurre."))
     autorizacion_lote = (lote.autorizacion_banco or r.autorizacion or "").strip()
     if not autorizacion_lote:
         frappe.throw(_("Falta la autorización que dio BancaNet (en el lote o en el resultado)."))
@@ -396,27 +437,37 @@ def aplicar_resultado(resultado_name):
                 diferencias.append(_("línea {0}: el banco reporta {1} y la transferencia es de {2}: "
                                      "no se creó el pago").format(m.linea, m.importe, t.importe))
                 continue
+            actual = estados[t.idx]
+            if actual.reintentado_en:
+                m.accion, m.pago = "Ya aplicado", actual.pago
+                out["ya_aplicados"] += 1
+                diferencias.append(_("línea {0}: la transferencia se reintentó en {1}; no se paga "
+                                     "desde el lote origen").format(m.linea, actual.reintentado_en))
+                continue
             if m.estatus == "3":
-                if t.estado_pago not in SIN_PAGAR:
+                if actual.estado_pago not in SIN_PAGAR or actual.pago:
                     # Ya tiene su pago: es el candado que evita el pago doble al aplicar dos veces.
-                    m.accion, m.pago = "Ya aplicado", t.pago
+                    m.accion, m.pago = "Ya aplicado", actual.pago
                     out["ya_aplicados"] += 1
                     continue
                 autorizacion = _autorizacion_del_movimiento(lote, r, m)
                 pago = _crear_pago(lote, t, facturas_por_t.get(t.idx, []), m, conf, autorizacion)
                 t.db_set({"estado_pago": "Aplicado", "pago": pago.name,
                           "clave_rastreo": m.clave_rastreo or None, "motivo_rechazo": None})
+                _liberar_facturas_con_saldo(lote, t.idx)
+                actual.estado_pago, actual.pago = "Aplicado", pago.name
                 m.accion, m.pago = "Pago creado", pago.name
                 out["creados"].append(pago.name)
             elif m.estatus == "5":
-                if t.estado_pago not in SIN_PAGAR:
+                if actual.estado_pago not in SIN_PAGAR or actual.pago:
                     # No se degrada un pago que ya existe: eso lo hace cancelar el Payment Entry.
-                    m.accion, m.pago = "Ya aplicado", t.pago
+                    m.accion, m.pago = "Ya aplicado", actual.pago
                     out["ya_aplicados"] += 1
                     diferencias.append(_("línea {0}: el banco la reporta rechazada pero ya tiene el "
-                                         "pago {1}").format(m.linea, t.pago))
+                                         "pago {1}").format(m.linea, actual.pago))
                     continue
                 t.db_set({"estado_pago": "Rechazado", "motivo_rechazo": (m.motivo or "")[:140]})
+                actual.estado_pago = "Rechazado"
                 m.accion = "Rechazado"
                 out["rechazados"] += 1
             else:
@@ -428,7 +479,8 @@ def aplicar_resultado(resultado_name):
             frappe.log_error(title=f"Resultado bancario {r.name}: línea {m.linea}",
                              message=frappe.get_traceback())
             frappe.clear_last_message()
-            m.accion, m.motivo = "Sin coincidencia", _("error al crear el pago: {0}").format(e)[:140]
+            m.accion = "Error al pagar"
+            m.motivo = " | ".join(filter(None, (m.motivo, _("error al crear el pago: {0}").format(e))))
             out["sin_coincidencia"] += 1
             diferencias.append(_("línea {0}: el pago no se pudo crear ({1})").format(m.linea, e))
     out["estado_lote"] = recalcular_estado_lote(lote.name)
@@ -451,7 +503,10 @@ def al_cancelar_pago(doc, method=None):
     Corre DESPUÉS del `on_cancel` de ERPNext (que ya le devolvió el saldo a las facturas) y ANTES del
     chequeo de enlaces de Frappe (`run_post_save_methods` llama a `check_no_back_links_exist` justo
     después de los hooks), así que limpiar `pago` aquí es además lo que permite cancelar el pago de un
-    lote enviado: si no, el Link de la transferencia lo bloquearía."""
+    lote enviado: si no, el Link de la transferencia lo bloquearía.
+
+    Si la factura liberada ya está en otro lote, no se recupera en_lote al cancelar el pago:
+    se conserva la reserva del nuevo lote (decisión asumida)."""
     if not doc.get("lote_pago"):
         return
     filas = frappe.db.sql("""select name, idx from `tabLote de Pago Transferencia`

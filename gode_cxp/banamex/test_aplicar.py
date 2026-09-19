@@ -5,12 +5,13 @@ Es lo único de la app que mueve saldos, así que las pruebas miran el efecto co
 `outstanding_amount` de cada factura) y no sólo los campos que se escriben.
 """
 from datetime import date
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from gode_cxp.banamex import api
-from gode_cxp.banamex.aplicar import aplicar_resultado, crear_resultado_desde_lote
+from gode_cxp.banamex.aplicar import _crear_pago, aplicar_resultado, crear_resultado_desde_lote
 from gode_cxp.cfdi import ejemplos
 from gode_cxp.facturas import pruebas_comun
 from gode_cxp.facturas.pruebas_comun import cuenta_verificada, factura_aprobada, usuario, xml_con
@@ -120,6 +121,7 @@ class TestAplicar(FrappeTestCase):
         r = self._resultado(self.lote12, {1: "3"})
         aplicar_resultado(r.name)
         r2 = self._resultado(self.lote12, {1: "3"})
+        api.marcar_revisado(r2.name)
         out = aplicar_resultado(r2.name)
         self.assertEqual((out["creados"], out["ya_aplicados"]), ([], 1))
         self.assertEqual(frappe.db.count("Payment Entry", {"lote_pago": self.lote12.name, "docstatus": 1}), 1)
@@ -149,6 +151,7 @@ class TestAplicar(FrappeTestCase):
         r = self._resultado(lote, {1: "3", 2: "5"})
         r.total_archivo = 999
         r.save()
+        api.marcar_revisado(r.name)
         out = aplicar_resultado(r.name)
         lote.reload()
         r.reload()
@@ -158,12 +161,15 @@ class TestAplicar(FrappeTestCase):
         self.assertEqual([t.estado_pago for t in lote.transferencias], ["Aplicado", "Rechazado"])
         self.assertEqual(frappe.db.get_value("Purchase Invoice", fa3.name, "outstanding_amount"),
                          fa3.outstanding_amount - 100)
+        self.assertIsNone(frappe.db.get_value("Purchase Invoice", fa3.name, "en_lote"))
+        self.assertIn(fa3.name, {f["name"] for f in facturas_pagables(pruebas_comun.EMPRESA)})
         self.assertEqual(frappe.db.get_value("Purchase Invoice", self.fc.name, "outstanding_amount"),
                          self.fc.outstanding_amount)
 
     def test_importe_distinto_no_se_aplica(self):
         """Si el banco reporta otro importe no se paga a ciegas: no se crea nada y queda anotado."""
         r = self._resultado(self.lote12, {1: "3"}, importes={1: 1159.0})
+        api.marcar_revisado(r.name)
         out = aplicar_resultado(r.name)
         r.reload()
         self.assertEqual((out["creados"], r.movimientos[0].accion), ([], "Importe distinto"))
@@ -175,6 +181,7 @@ class TestAplicar(FrappeTestCase):
         r.movimientos[0].linea = 9
         r.movimientos[0].cuenta = "000000000000000000"
         r.save()
+        api.marcar_revisado(r.name)
         out = aplicar_resultado(r.name)
         self.assertEqual((out["creados"], out["sin_coincidencia"]), ([], 1))
         self.assertEqual(frappe.db.get_value("Lote de Pago", self.lote12.name, "estado_lote"), "Transmitido")
@@ -189,6 +196,7 @@ class TestAplicar(FrappeTestCase):
         for m in r.movimientos:
             m.linea = m.linea + 100        # ninguna línea existe en el lote
         r.save()
+        api.marcar_revisado(r.name)
         out = aplicar_resultado(r.name)
         lote.reload()
         self.assertEqual((len(out["creados"]), lote.estado_lote), (2, "Aplicado"))
@@ -208,7 +216,9 @@ class TestAplicar(FrappeTestCase):
         # El lote vuelve a apartar sus facturas: al quedar Aplicado se habían liberado por tener saldo.
         self.assertEqual(frappe.db.get_value("Purchase Invoice", self.fa1.name, "en_lote"), self.lote12.name)
         # Y se puede volver a aplicar, porque la transferencia está otra vez pendiente.
-        out = aplicar_resultado(self._resultado(self.lote12, {1: "3"}).name)
+        r = self._resultado(self.lote12, {1: "3"})
+        api.marcar_revisado(r.name)
+        out = aplicar_resultado(r.name)
         self.assertEqual(len(out["creados"]), 1, out["resumen"])
 
     def test_el_lote_aplicado_libera_las_facturas_que_quedaron_con_saldo(self):
@@ -230,6 +240,7 @@ class TestAplicar(FrappeTestCase):
         """No se degrada un pago que ya existe: eso sólo lo hace cancelar el Payment Entry."""
         (pago,) = aplicar_resultado(self._resultado(self.lote12, {1: "3"}).name)["creados"]
         r = self._resultado(self.lote12, {1: "5"})
+        api.marcar_revisado(r.name)
         out = aplicar_resultado(r.name)
         r.reload()
         self.assertEqual((out["rechazados"], out["ya_aplicados"], r.movimientos[0].accion),
@@ -309,3 +320,189 @@ class TestAplicar(FrappeTestCase):
         out = api.aplicar(r.name)
         self.assertEqual((len(out["creados"]), out["estado_lote"]), (1, "Aplicado"))
         self.assertIn("Aplicado", out["resumen"])
+
+    def test_archivo_rechazado_o_cancelado_no_paga_lineas_aplicadas(self):
+        for estatus in ("32", "10"):
+            with self.subTest(estatus=estatus):
+                r = self._resultado(self.lote12, {1: "3"})
+                r.estatus_archivo = estatus
+                r.save()
+                api.marcar_revisado(r.name)
+                with self.assertRaisesRegex(frappe.ValidationError, "rechazado/cancelado.*línea 1"):
+                    aplicar_resultado(r.name)
+        self.assertEqual(frappe.db.count("Payment Entry", {"lote_pago": self.lote12.name}), 0)
+
+    def test_crear_pago_exige_asignaciones_exactas(self):
+        for importes in ([], [100], [1161], [1000, 159]):
+            with self.subTest(importes=importes):
+                facturas = [frappe._dict(importe=importe) for importe in importes]
+                with patch("gode_cxp.banamex.aplicar.frappe.new_doc") as nuevo:
+                    with self.assertRaisesRegex(frappe.ValidationError, "asignaciones"):
+                        _crear_pago(self.lote12, self.lote12.transferencias[0], facturas,
+                                    None, None, AUTORIZACION)
+                    nuevo.assert_not_called()
+
+    def test_diferencias_sin_pagos_exigen_revision(self):
+        r = self._resultado(self.lote12, {1: "3"}, importes={1: 1159})
+        with self.assertRaisesRegex(frappe.ValidationError, "Marcar revisado"):
+            aplicar_resultado(r.name)
+        self.assertEqual(frappe.db.count("Payment Entry", {"lote_pago": self.lote12.name}), 0)
+        api.marcar_revisado(r.name)
+        self.assertEqual(aplicar_resultado(r.name)["creados"], [])
+
+    def test_resultado_aplicado_no_admite_otra_aplicacion(self):
+        r = self._resultado(self.lote12, {1: "3"})
+        aplicar_resultado(r.name)
+        with self.assertRaisesRegex(frappe.ValidationError, "Solo se aplica un resultado"):
+            aplicar_resultado(r.name)
+        self.assertEqual(frappe.db.count("Payment Entry", {"lote_pago": self.lote12.name}), 1)
+
+    def test_fecha_futura_no_crea_pagos(self):
+        r = self._resultado(self.lote12, {1: "3"})
+        with patch("gode_cxp.banamex.aplicar.today", return_value="2026-09-16"):
+            with self.assertRaisesRegex(frappe.ValidationError, "el pago aún no ocurre"):
+                aplicar_resultado(r.name)
+        self.assertEqual(frappe.db.count("Payment Entry", {"lote_pago": self.lote12.name}), 0)
+
+    def test_error_al_pagar_conserva_el_motivo_del_banco(self):
+        r = self._resultado(self.lote12, {1: "3"})
+        r.movimientos[0].motivo = MOTIVO
+        r.save()
+        with patch("gode_cxp.banamex.aplicar._crear_pago", side_effect=frappe.ValidationError("fallo simulado")):
+            out = aplicar_resultado(r.name)
+        r.reload()
+        self.assertEqual(out["creados"], [])
+        self.assertEqual(r.movimientos[0].accion, "Error al pagar")
+        self.assertEqual(r.movimientos[0].motivo, MOTIVO + " | error al crear el pago: fallo simulado")
+        self.assertEqual(r.estado, "Con diferencias")
+        # Guardar las notas no borra el estado que dejó el intento de aplicación.
+        r.save()
+        self.assertEqual(r.estado, "Con diferencias")
+
+    def test_resultado_con_aplicacion_congela_lote_y_estatus_archivo(self):
+        r = self._resultado(self.lote12, {1: "3"})
+        aplicar_resultado(r.name)
+        otro = self._transmitido([{"factura": self.fc.name, "importe": 50}], autorizacion="2")
+        for campo, valor in (("lote", otro.name), ("estatus_archivo", "32")):
+            with self.subTest(campo=campo):
+                r.reload()
+                r.set(campo, valor)
+                with self.assertRaisesRegex(frappe.ValidationError, "no se puede cambiar"):
+                    r.save()
+
+    def test_transferencia_reintentada_no_se_paga_desde_el_origen(self):
+        aplicar_resultado(self._resultado(self.lote12, {1: "5"}).name)
+        nuevo = nuevo_lote_pendientes(self.lote12.name)
+        r = self._resultado(self.lote12, {1: "3"})
+        api.marcar_revisado(r.name)
+        out = aplicar_resultado(r.name)
+        r.reload()
+        self.assertEqual((out["creados"], out["ya_aplicados"]), ([], 1))
+        self.assertEqual(r.movimientos[0].accion, "Ya aplicado")
+        self.assertIn(nuevo, r.diferencias)
+
+    def test_dos_lineas_para_la_misma_transferencia_no_duplican_pago(self):
+        r = self._resultado(self.lote12, {1: "3"})
+        r.append("movimientos", {"linea": 1, "cuenta": CLABE_A, "importe": 1160, "estatus": "3"})
+        r.save()
+        api.marcar_revisado(r.name)
+        out = aplicar_resultado(r.name)
+        self.assertEqual((len(out["creados"]), out["ya_aplicados"]), (1, 1))
+
+    def test_aplicar_ve_el_commit_de_una_segunda_conexion(self):
+        try:
+            import pymysql
+        except ImportError:
+            self.skipTest("El runner no tiene pymysql para abrir una segunda conexión MariaDB.")
+        try:
+            segunda = pymysql.connect(
+                host=frappe.conf.db_host or "localhost", port=int(frappe.conf.db_port or 3306),
+                user=frappe.conf.db_user or frappe.conf.db_name,
+                password=frappe.conf.db_password, database=frappe.conf.db_name,
+                unix_socket=frappe.conf.db_socket or None, connect_timeout=5)
+        except pymysql.MySQLError as error:
+            self.skipTest("El runner no permite una segunda conexión MariaDB: " + type(error).__name__)
+        pendiente = None
+        try:
+            fa3 = factura_aprobada(xml_con(ejemplos.INGRESO_40, "55555555-6666-7777-8888-999999999999", "81"))
+            lote = self._transmitido([{"factura": fa3.name, "importe": 100},
+                                      {"factura": self.fc.name, "importe": 50}], autorizacion="2")
+            aplicar_resultado(self._resultado(lote, {1: "3"}).name)
+            r = self._resultado(lote, {2: "3"})
+            api.marcar_revisado(r.name)
+            frappe.db.commit()
+            lote.reload()
+            self.assertEqual(lote.estado_lote, "Parcial")
+            pendiente = lote.transferencias[1].name
+            anterior = (lote.transferencias[1].estado_pago, lote.transferencias[1].pago)
+            filtros = {"lote_pago": lote.name, "docstatus": 1}
+            cantidad = frappe.db.count("Payment Entry", filtros)
+            with segunda.cursor() as cursor:
+                cursor.execute("""update `tabLote de Pago Transferencia`
+                                  set estado_pago='Aplicado', pago='PAGO-FICTICIO' where name=%s""",
+                               (pendiente,))
+            segunda.commit()
+            self.assertEqual(frappe.db.get_value("Lote de Pago Transferencia", pendiente, "estado_pago"),
+                             "Pendiente")
+            try:
+                # El pago ficticio sólo representa el commit ajeno; no existe para validar el Link.
+                with patch("frappe.model.document.Document._validate_links"):
+                    out = aplicar_resultado(r.name)
+            except frappe.ValidationError as error:
+                self.assertIn("Otra persona", str(error))
+            else:
+                self.assertEqual((out["creados"], out["ya_aplicados"]), ([], 1))
+                r.reload()
+                self.assertEqual(r.movimientos[1].accion, "Ya aplicado")
+                self.assertEqual(r.movimientos[1].pago, "PAGO-FICTICIO")
+            self.assertEqual(frappe.db.count("Payment Entry", filtros), cantidad)
+        finally:
+            frappe.db.rollback()
+            try:
+                if pendiente:
+                    with segunda.cursor() as cursor:
+                        cursor.execute("""update `tabLote de Pago Transferencia`
+                                          set estado_pago=%s, pago=%s where name=%s""",
+                                       (*anterior, pendiente))
+                    segunda.commit()
+            finally:
+                segunda.close()
+
+    def test_aplicar_recarga_movimientos_antes_del_cruce(self):
+        viejo = self._resultado(self.lote12, {1: "3"})
+        actual = frappe.get_doc("Resultado Bancario", viejo.name)
+        actual.movimientos[0].estatus = "5"
+        actual.movimientos[0].motivo = MOTIVO
+        actual.save()
+        obtener = frappe.get_doc
+        entregado = False
+
+        def documento(*args, **kwargs):
+            nonlocal entregado
+            if not entregado and args == ("Resultado Bancario", viejo.name):
+                entregado = True
+                return viejo
+            return obtener(*args, **kwargs)
+
+        # Simula el documento que se leyó antes de esperar por el candado del lote.
+        with patch("gode_cxp.banamex.aplicar.frappe.get_doc", side_effect=documento):
+            out = aplicar_resultado(viejo.name)
+        self.assertEqual((out["creados"], out["rechazados"]), ([], 1))
+        actual.reload()
+        self.assertEqual(actual.movimientos[0].accion, "Rechazado")
+
+    def test_diferencias_con_pagos_previos_permiten_completar(self):
+        fa3 = factura_aprobada(xml_con(ejemplos.INGRESO_40, "66666666-7777-8888-9999-111111111111", "82"))
+        lote = self._transmitido([{"factura": fa3.name, "importe": 100},
+                                  {"factura": self.fc.name, "importe": 50}], autorizacion="2")
+        r = self._resultado(lote, {1: "3"})
+        r.total_archivo = 999
+        r.save()
+        api.marcar_revisado(r.name)
+        self.assertEqual(len(aplicar_resultado(r.name)["creados"]), 1)
+        r.reload()
+        r.movimientos[1].estatus = "3"
+        r.save()
+        self.assertEqual(r.estado, "Con diferencias")
+        out = aplicar_resultado(r.name)
+        self.assertEqual((len(out["creados"]), out["ya_aplicados"]), (1, 1))

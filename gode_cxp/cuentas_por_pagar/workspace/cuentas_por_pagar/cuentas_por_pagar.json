@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\":\"enc1\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Facturas</b></span>\",\"col\":12}},{\"id\":\"a1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Bandeja de CFDI\",\"col\":4}},{\"id\":\"a2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Facturas de compra\",\"col\":4}},{\"id\":\"a3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Proveedores\",\"col\":4}},{\"id\":\"enc2\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Deuda y configuración</b></span>\",\"col\":12}},{\"id\":\"a4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cuentas por pagar\",\"col\":4}},{\"id\":\"a5\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Antigüedad de saldos\",\"col\":4}},{\"id\":\"a6\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Configuración CxP\",\"col\":4}}]",
+ "content": "[{\"id\":\"enc1\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Facturas</b></span>\",\"col\":12}},{\"id\":\"a1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Bandeja de CFDI\",\"col\":4}},{\"id\":\"a2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Facturas de compra\",\"col\":4}},{\"id\":\"a3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Proveedores\",\"col\":4}},{\"id\":\"enc3\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Pagos</b></span>\",\"col\":12}},{\"id\":\"p1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Lotes de pago\",\"col\":4}},{\"id\":\"p2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Pagos\",\"col\":4}},{\"id\":\"p3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cuentas bancarias de proveedores\",\"col\":4}},{\"id\":\"enc2\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Deuda y configuración</b></span>\",\"col\":12}},{\"id\":\"a4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Cuentas por pagar\",\"col\":4}},{\"id\":\"a5\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Antigüedad de saldos\",\"col\":4}},{\"id\":\"a6\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Configuración CxP\",\"col\":4}}]",
  "creation": "2026-09-17 00:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -13,7 +13,7 @@
  "is_hidden": 0,
  "label": "Cuentas por Pagar",
  "links": [],
- "modified": "2026-09-17 00:00:00.000000",
+ "modified": "2026-09-18 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Cuentas por Pagar",
  "name": "Cuentas por Pagar",
@@ -54,6 +54,26 @@
    "doc_view": "List",
    "label": "Proveedores",
    "link_to": "Supplier",
+   "type": "DocType"
+  },
+  {
+   "doc_view": "List",
+   "label": "Lotes de pago",
+   "link_to": "Lote de Pago",
+   "type": "DocType"
+  },
+  {
+   "doc_view": "List",
+   "label": "Pagos",
+   "link_to": "Payment Entry",
+   "stats_filter": "{\"payment_type\":\"Pay\"}",
+   "type": "DocType"
+  },
+  {
+   "doc_view": "List",
+   "label": "Cuentas bancarias de proveedores",
+   "link_to": "Bank Account",
+   "stats_filter": "{\"party_type\":\"Supplier\"}",
    "type": "DocType"
   },
   {

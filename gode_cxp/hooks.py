@@ -36,3 +36,6 @@ doc_events = {
 }
 
 doctype_js = {"Bank Account": "public/js/bank_account.js"}
+# El formulario del Lote de Pago no necesita hook (lote_de_pago.js vive junto a su DocType); la lista
+# de facturas sí, porque Purchase Invoice es un DocType de ERPNext.
+doctype_list_js = {"Purchase Invoice": "public/js/purchase_invoice_list.js"}

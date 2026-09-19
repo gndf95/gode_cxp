@@ -41,6 +41,10 @@ doc_events = {
     # diferencias se calculan al guardar, tanto si el resultado se captura a mano en el formulario
     # como si lo arma la carga del archivo (banamex/aplicar.py).
     "Resultado Bancario": {"validate": "gode_cxp.banamex.aplicar.validar_resultado"},
+    # Cancelar el pago de un lote devuelve su transferencia a Pendiente y recalcula el estado del
+    # lote. Va en `on_cancel` a propósito: corre después de que ERPNext le devolvió el saldo a las
+    # facturas y antes del chequeo de enlaces de Frappe, que es lo que bloquearía la cancelación.
+    "Payment Entry": {"on_cancel": "gode_cxp.banamex.aplicar.al_cancelar_pago"},
 }
 
 doctype_js = {"Bank Account": "public/js/bank_account.js"}

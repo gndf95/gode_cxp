@@ -7,7 +7,7 @@ permiso de escritura del documento no alcanza para distinguirlas de guardar una 
 import frappe
 from frappe import _
 
-from gode_cxp.banamex import aplicar
+from gode_cxp.banamex.aplicar import aplicar_resultado, cargar_archivo, crear_resultado_desde_lote
 
 
 def _exigir(*roles):
@@ -39,7 +39,7 @@ def crear_captura_manual(lote):
     """Alta del resultado con un movimiento por transferencia (el botón del formulario del lote)."""
     _exigir("CxP Tesoreria", "System Manager")
     _exigir_el_lote(lote)
-    return aplicar.crear_resultado_desde_lote(lote).name
+    return crear_resultado_desde_lote(lote).name
 
 
 @frappe.whitelist()
@@ -47,7 +47,7 @@ def importar_respuesta(resultado, file_url):
     """Carga el archivo que devolvió BancaNet. Devuelve un resumen para la pantalla."""
     _exigir("CxP Tesoreria", "System Manager")
     _exigir_el_resultado(resultado)
-    r = aplicar.cargar_archivo(resultado, file_url)
+    r = cargar_archivo(resultado, file_url)
     resumen = _("{0} movimientos: {1} aplicados y {2} rechazados.").format(
         len(r.movimientos), r.num_aplicados, r.num_rechazados)
     if r.diferencias:
@@ -69,3 +69,12 @@ def marcar_revisado(resultado):
                        ).format(doc.name, doc.estado))
     doc.db_set("estado", "Revisado")
     return doc.name
+
+
+@frappe.whitelist()
+def aplicar(resultado):
+    """Crea los pagos de lo que el banco aplicó y marca los rechazos. Mueve dinero: además del rol,
+    exige permiso de escritura sobre el resultado Y sobre su lote."""
+    _exigir("CxP Tesoreria", "System Manager")
+    _exigir_el_resultado(resultado)
+    return aplicar_resultado(resultado)

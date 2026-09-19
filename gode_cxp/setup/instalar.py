@@ -17,6 +17,12 @@ ROLES = ("CxP Revisor", "CxP Tesoreria", "CxP Contabilidad", EDITOR)
 # Grupo al que se dan de alta los proveedores nuevos que llegan por CFDI.
 GRUPO_PROVEEDORES = "Proveedores CFDI"
 
+# Valores de arranque del pre-registro de cuentas en BancaNet. El `default` del DocType sólo se
+# aplica a un documento NUEVO y Configuracion CxP es un Single que ya existe, así que sin esto
+# `exigir_preregistro` quedaría en blanco (o sea apagado) después de la migración que lo estrena.
+DEFAULTS_PREREGISTRO = {"exigir_preregistro": 1, "importe_maximo_preregistro": 500000,
+                        "periodo_preregistro": "DIARIO"}
+
 
 def asegurar_roles():
     for rol in ROLES:
@@ -39,10 +45,26 @@ def asegurar_grupo_proveedores():
                         "parent_supplier_group": raiz_de_grupos_proveedores(), "is_group": 0}).insert(ignore_permissions=True)
 
 
+def asegurar_preregistro():
+    """Deja el pre-registro de cuentas listo para usarse después de la migración que lo estrena.
+
+    Dos cosas que un `default` no puede hacer: llenar los campos nuevos del Single de configuración
+    (que ya existía) y poner 'Sin registrar' en las cuentas de proveedor que se dieron de alta antes
+    de que el campo existiera —sin eso quedarían en NULL, no saldrían en la lista de pendientes y el
+    candado del lote las tomaría por no registradas sin que nadie pudiera mandarlas al banco."""
+    for campo, valor in DEFAULTS_PREREGISTRO.items():
+        if frappe.db.get_single_value("Configuracion CxP", campo) is None:
+            frappe.db.set_single_value("Configuracion CxP", campo, valor)
+    frappe.db.sql("""update `tabBank Account` set estado_preregistro = 'Sin registrar'
+                     where ifnull(party_type, '') = 'Supplier' and ifnull(estado_preregistro, '') = ''""")
+
+
 def asegurar_configuracion():
     asegurar_roles()
     asegurar_grupo_proveedores()
     asegurar_campos()
+    # Después de asegurar_campos: los campos del pre-registro tienen que existir para poder llenarlos.
+    asegurar_preregistro()
     asegurar_permisos()
     asegurar_reportes()
     asegurar_flujo()

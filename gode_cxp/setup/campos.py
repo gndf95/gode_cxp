@@ -69,6 +69,25 @@ CAMPOS = {
         {"fieldname": "verificada", "label": "Verificada por Tesorería", "fieldtype": "Check", "read_only": 1, "insert_after": "nombre_tef", "in_list_view": 1},
         {"fieldname": "verificada_por", "label": "Verificada por", "fieldtype": "Link", "options": "User", "read_only": 1, "insert_after": "verificada"},
         {"fieldname": "verificada_el", "label": "Verificada el", "fieldtype": "Datetime", "read_only": 1, "insert_after": "verificada_por"},
+        # Alta de la cuenta en BancaNet: Banamex no deja pagar a una cuenta que no está dada de alta
+        # en el contrato. La sección siguiente en el meta estándar es `address_and_contact`, así que
+        # esta no se traga ningún campo de ERPNext (lo vigila
+        # test_produccion_pagos.test_las_secciones_nuevas_no_se_tragan_campos_estandar).
+        {"fieldname": "sec_preregistro", "label": "Pre-registro en BancaNet", "fieldtype": "Section Break",
+         "insert_after": "verificada_el", "depends_on": "eval:doc.party_type=='Supplier'"},
+        {"fieldname": "estado_preregistro", "label": "Alta en el banco", "fieldtype": "Select",
+         "options": "Sin registrar\nEnviada al banco\nRegistrada\nRechazada", "default": "Sin registrar",
+         "read_only": 1, "in_list_view": 1, "in_standard_filter": 1, "insert_after": "sec_preregistro",
+         "description": "Lo mueven la descarga del pre-registro y la carga de la respuesta del banco"},
+        {"fieldname": "preregistro_enviado_el", "label": "Pre-registro enviado el", "fieldtype": "Datetime",
+         "read_only": 1, "insert_after": "estado_preregistro"},
+        {"fieldname": "col_preregistro", "fieldtype": "Column Break", "insert_after": "preregistro_enviado_el"},
+        {"fieldname": "preregistro_respuesta", "label": "Respuesta del banco", "fieldtype": "Data", "length": 140,
+         "read_only": 1, "insert_after": "col_preregistro"},
+        # Tope que se le pide al banco para esta cuenta. Vacío = el de Configuración CxP (un default
+        # estático no puede leer la configuración, así que la omisión se resuelve al armar la fila).
+        {"fieldname": "importe_maximo_banco", "label": "Importe máximo autorizado en el banco", "fieldtype": "Currency",
+         "insert_after": "preregistro_respuesta"},
     ],
     # El pago se crea al aplicar el resultado del banco: el lote, la autorización y la clave de
     # rastreo se escriben sobre el Payment Entry ya confirmado, de ahí el allow_on_submit.

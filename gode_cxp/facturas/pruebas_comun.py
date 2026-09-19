@@ -97,9 +97,14 @@ def factura_aprobada(xml_bytes, nombre="factura.xml"):
         frappe.set_user(usuario_antes)
 
 
-def cuenta_verificada(proveedor, clabe, banco="Banorte", sucursal=None, cuenta=None):
-    """Bank Account de proveedor con CLABE y ya verificada por Tesorería."""
-    from gode_cxp.pagos.cuentas_bancarias import verificar_cuenta
+def cuenta_verificada(proveedor, clabe, banco="Banorte", sucursal=None, cuenta=None, registrada=True):
+    """Bank Account de proveedor con CLABE, verificada por Tesorería y —salvo que se pida lo
+    contrario— ya dada de alta en BancaNet.
+
+    `registrada=True` por omisión porque el lote exige el pre-registro (pagos/eventos.validar_lote) y
+    lo que prueban los demás módulos no es el alta en el banco: es lo que pasa con una cuenta que ya
+    se puede pagar. Las pruebas del pre-registro piden `registrada=False`."""
+    from gode_cxp.pagos.cuentas_bancarias import REGISTRADA, verificar_cuenta
     if not frappe.db.exists("Bank", banco):
         frappe.get_doc({"doctype": "Bank", "bank_name": banco}).insert(ignore_permissions=True)
     _nombre_de_persona_fisica(proveedor)
@@ -108,6 +113,9 @@ def cuenta_verificada(proveedor, clabe, banco="Banorte", sucursal=None, cuenta=N
                           "sucursal_banamex": sucursal, "cuenta_banamex": cuenta, "is_default": 1})
     doc.insert(ignore_permissions=True)
     verificar_cuenta(doc.name)
+    if registrada:
+        frappe.db.set_value("Bank Account", doc.name, {"estado_preregistro": REGISTRADA,
+                                                      "preregistro_respuesta": "0000 ALTA APLICADA"})
     return doc.name
 
 
@@ -197,10 +205,13 @@ def limpiar():
             frappe.delete_doc("User", correo, force=1, ignore_permissions=True, delete_permanently=True)
     for correo in USUARIOS_PRUEBA:
         frappe.clear_cache(user=correo)
-    # Las pruebas de la bandeja suben XML, ZIP y PDF sueltos (File sin adjuntar). Los que la carga
-    # no borra (un archivo ajeno, uno que falló) se quedarían acumulándose en el sitio de pruebas.
+    # Las pruebas de la bandeja suben XML, ZIP y PDF sueltos (File sin adjuntar), las del
+    # pre-registro dejan el XLSX de la plantilla y el TXT de la respuesta del banco. Los que nadie
+    # borra (un archivo ajeno, uno que falló) se quedarían acumulándose en el sitio de pruebas.
     for name in frappe.get_all("File", filters={"attached_to_doctype": ["is", "not set"], "is_folder": 0},
-                               or_filters=[["file_name", "like", "%.xml"], ["file_name", "like", "%.zip"], ["file_name", "like", "%.pdf"]],
+                               or_filters=[["file_name", "like", "%.xml"], ["file_name", "like", "%.zip"],
+                                           ["file_name", "like", "%.pdf"], ["file_name", "like", "%.xlsx"],
+                                           ["file_name", "like", "%.txt"]],
                                pluck="name"):
         frappe.delete_doc("File", name, force=1, ignore_permissions=True, delete_permanently=True)
     frappe.db.commit()

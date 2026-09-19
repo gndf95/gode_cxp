@@ -33,7 +33,12 @@
   "nombre_empresa_tef",
   "concepto_tef",
   "referencia_numerica_modo",
-  "referencia_numerica_fija"
+  "referencia_numerica_fija",
+  "sec_preregistro",
+  "exigir_preregistro",
+  "importe_maximo_preregistro",
+  "col_preregistro",
+  "periodo_preregistro"
  ],
  "fields": [
   {"fieldname": "sec_empresa", "fieldtype": "Section Break", "label": "Empresa y contabilidad"},
@@ -61,7 +66,12 @@
   {"fieldname": "nombre_empresa_tef", "fieldtype": "Data", "label": "Nombre de la empresa en el archivo TEF (36)", "length": 36, "description": "Mayúsculas sin acentos ni puntos; es el ordenante que ve el banco."},
   {"fieldname": "concepto_tef", "fieldtype": "Data", "label": "Concepto del archivo TEF (20)", "length": 20},
   {"fieldname": "referencia_numerica_modo", "fieldtype": "Select", "label": "Referencia numérica", "options": "Fecha del lote\nFija", "default": "Fecha del lote"},
-  {"fieldname": "referencia_numerica_fija", "fieldtype": "Data", "label": "Referencia numérica fija (7 dígitos)", "length": 7, "depends_on": "eval:doc.referencia_numerica_modo=='Fija'"}
+  {"fieldname": "referencia_numerica_fija", "fieldtype": "Data", "label": "Referencia numérica fija (7 dígitos)", "length": 7, "depends_on": "eval:doc.referencia_numerica_modo=='Fija'"},
+  {"fieldname": "sec_preregistro", "fieldtype": "Section Break", "label": "Pre-registro de cuentas en BancaNet"},
+  {"fieldname": "exigir_preregistro", "fieldtype": "Check", "label": "Exigir que la cuenta esté dada de alta en el banco", "default": "1", "description": "Banamex no deja pagar a una cuenta que no está pre-registrada. Apágalo sólo mientras se dan de alta los proveedores que ya existían."},
+  {"fieldname": "importe_maximo_preregistro", "fieldtype": "Currency", "label": "Importe máximo por cuenta (pesos)", "default": "500000"},
+  {"fieldname": "col_preregistro", "fieldtype": "Column Break"},
+  {"fieldname": "periodo_preregistro", "fieldtype": "Select", "label": "Periodo del importe máximo", "options": "DIARIO\nSEMANAL\nQUINCENAL\nMENSUAL", "default": "DIARIO"}
  ],
  "permissions": [
   {"role": "System Manager", "read": 1, "write": 1, "create": 1, "print": 1, "email": 1, "share": 1},

@@ -7,7 +7,7 @@ permiso de escritura del Lote de Pago no alcanza para distinguirlas de guardar u
 import frappe
 from frappe import _
 
-from gode_cxp.pagos import lotes
+from gode_cxp.pagos import lotes, preregistro
 
 
 def _exigir(*roles):
@@ -64,3 +64,25 @@ def nuevo_lote_pendientes(lote):
     _exigir("CxP Tesoreria", "System Manager")
     _exigir_el_lote(lote)
     return lotes.nuevo_lote_pendientes(lote)
+
+
+# --- alta de las cuentas de proveedor en BancaNet (pagos/preregistro.py) --------------------------
+# Dar de alta una cuenta en el banco es lo que abre la puerta a pagarle a ese proveedor: es de
+# Tesorería, igual que verificar la cuenta.
+
+@frappe.whitelist()
+def descargar_preregistro(cuentas=None):
+    _exigir("CxP Tesoreria", "System Manager")
+    return preregistro.descargar_preregistro(cuentas)
+
+
+@frappe.whitelist()
+def aplicar_respuesta_preregistro(file_url):
+    _exigir("CxP Tesoreria", "System Manager")
+    return preregistro.aplicar_respuesta_preregistro(file_url)
+
+
+@frappe.whitelist()
+def marcar_registrada(cuentas):
+    _exigir("CxP Tesoreria", "System Manager")
+    return preregistro.marcar_registrada(cuentas)

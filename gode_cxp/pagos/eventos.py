@@ -7,8 +7,9 @@ import frappe
 from frappe import _
 from frappe.utils import cstr, flt
 
-from gode_cxp.pagos.cuentas_bancarias import validar_nombre_tef
+from gode_cxp.pagos.cuentas_bancarias import REGISTRADA, SIN_PREREGISTRO, validar_nombre_tef
 from gode_cxp.pagos.lotes import ACTIVOS, REINTENTABLES, bloquear_facturas
+from gode_cxp.pagos.preregistro import exigir_preregistro
 
 
 CAMPOS_DE_ARCHIVO = ("secuencial", "nombre_archivo", "archivo_tef", "generado_el", "transmitido_el",
@@ -131,13 +132,21 @@ def validar_lote(doc, method=None):
         if frappe.db.get_value("Supplier", pi.supplier, "bloqueado_pagos"):
             frappe.throw(_("El proveedor {0} está bloqueado para pagos.").format(pi.supplier))
         suma_por_transferencia[f.transferencia] = suma_por_transferencia.get(f.transferencia, 0) + flt(f.importe)
+    # Una sola lectura de la configuración para todas las transferencias del lote.
+    exigir = exigir_preregistro()
     for t in doc.transferencias:
         c = frappe.db.get_value("Bank Account", t.cuenta_bancaria,
-                                ["verificada", "tipo_pago_tef", "party", "disabled"], as_dict=True)
+                                ["verificada", "tipo_pago_tef", "party", "disabled", "estado_preregistro"],
+                                as_dict=True)
         if not c or c.party != t.proveedor or c.disabled:
             frappe.throw(_("La cuenta {0} no es del proveedor {1}.").format(t.cuenta_bancaria, t.proveedor))
         if not c.verificada:
             frappe.throw(_("La cuenta {0} de {1} no está verificada por Tesorería.").format(t.cuenta_bancaria, t.proveedor))
+        # Banamex rechaza la transferencia a una cuenta que no está dada de alta en el contrato: el
+        # archivo se subiría y el pago no saldría, así que se frena antes de armar el lote.
+        if exigir and c.estado_preregistro != REGISTRADA:
+            frappe.throw(_("La cuenta de {0} no está pre-registrada en BancaNet (estado: {1}).")
+                         .format(t.proveedor, c.estado_preregistro or SIN_PREREGISTRO))
         if c.tipo_pago_tef != doc.naturaleza:
             frappe.throw(_("La cuenta de {0} es naturaleza {1}; el lote es {2}.").format(t.proveedor, c.tipo_pago_tef, doc.naturaleza))
         error = validar_nombre_tef(t.beneficiario_tef)

@@ -20,6 +20,11 @@ PERMITIDOS_TEF = re.compile(r"[A-Z0-9 ,./]*")
 # misma CLABE y el mismo beneficiario verificados.
 CAMPOS_AL_BANCO = ("party_type", "party", "clabe", "sucursal_banamex", "cuenta_banamex", "nombre_tef")
 ROLES_VERIFICAN = ("CxP Tesoreria", "System Manager")
+# Estados del alta (pre-registro) de la cuenta en BancaNet; los mueve pagos/preregistro.py. Viven
+# aquí, con los demás datos de la cuenta, porque pagos/preregistro.py ya depende de este módulo
+# (transliterar) y al revés sería una importación circular.
+ESTADOS_PREREGISTRO = ("Sin registrar", "Enviada al banco", "Registrada", "Rechazada")
+SIN_PREREGISTRO, ENVIADA_AL_BANCO, REGISTRADA, RECHAZADA = ESTADOS_PREREGISTRO
 
 
 def validar_clabe(clabe):
@@ -127,10 +132,15 @@ def validar_cuenta_bancaria(doc, method=None):
     error = validar_nombre_tef(doc.nombre_tef)
     if error:
         frappe.throw(_("Beneficiario para el TEF: {0}.").format(error))
+    # Una cuenta nueva (o una de antes de que existiera el campo) arranca sin dar de alta en el banco.
+    doc.estado_preregistro = doc.estado_preregistro or SIN_PREREGISTRO
     antes = doc.get_doc_before_save()
-    if antes and doc.verificada and any((antes.get(c) or "") != (doc.get(c) or "") for c in CAMPOS_AL_BANCO):
-        # Cambió algo que va al banco: Tesorería tiene que volver a verificar.
+    if antes and any((antes.get(c) or "") != (doc.get(c) or "") for c in CAMPOS_AL_BANCO):
+        # Cambió algo que va al banco: Tesorería tiene que volver a verificar…
         doc.verificada, doc.verificada_por, doc.verificada_el = 0, None, None
+        # …y el alta que BancaNet autorizó ya no es de esta cuenta, así que hay que pedirla otra vez.
+        doc.estado_preregistro = SIN_PREREGISTRO
+        doc.preregistro_enviado_el = doc.preregistro_respuesta = None
     # Candado del servidor: `verificada` es read_only en pantalla, pero eso no frena un save() por
     # API ni por consola. Pasar de 0 a 1 a mano solo lo puede Tesorería. El camino normal,
     # verificar_cuenta(), escribe con db_set y por eso no pasa por aquí (y además marca el flag).

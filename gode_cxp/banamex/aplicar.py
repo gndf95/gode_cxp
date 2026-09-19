@@ -9,7 +9,7 @@ from erpnext.accounts.party import get_party_account
 from frappe import _
 from frappe.utils import flt, now_datetime
 
-from gode_cxp.banamex.respuesta import RespuestaInvalida, leer_respuesta
+from gode_cxp.banamex.respuesta import CANCELADO, RECHAZADO, RespuestaInvalida, leer_respuesta
 from gode_cxp.pagos.lotes import _sql_con_candado
 
 CAPTURA_MANUAL, ARCHIVO_DEL_PORTAL = "Captura manual", "Archivo del portal"
@@ -21,6 +21,11 @@ TOLERANCIA = 0.005
 SIN_PAGAR = ("Pendiente", "Rechazado", "Devuelto")
 # Estados del lote que salen de lo que contestó el banco (los que recalcula `recalcular_estado_lote`).
 DEL_BANCO = ("Aplicado", "Parcial", "Rechazado")
+# Campos del resultado que sólo escriben la carga del archivo y la creación de los pagos.
+DE_LA_APLICACION = ("estado", "aplicado_el", "aplicado_por")
+# Lo mismo por movimiento; y, en una línea que ya tiene su pago, tampoco se toca lo que la describe.
+DE_LA_APLICACION_MOV = ("accion", "pago")
+CONGELADOS_CON_PAGO = ("estatus", "importe", "linea", "cuenta")
 
 
 def crear_resultado_desde_lote(lote_name):
@@ -38,6 +43,7 @@ def crear_resultado_desde_lote(lote_name):
         r.append("movimientos", {"linea": t.linea_tef or t.idx, "beneficiario": t.beneficiario_tef,
                                  "cuenta": t.cuenta_tef, "importe": t.importe, "estatus": ""})
     r.insert()
+    _avisar_si_el_lote_ya_tiene_resultado(r)
     return r
 
 
@@ -87,17 +93,98 @@ def cargar_archivo(resultado_name, file_url):
               "autorizacion": leido["autorizacion"] or r.autorizacion,
               # Un archivo nuevo se vuelve a juzgar: el visto bueno anterior era de los movimientos viejos.
               "estado": "Importado"})
+    # La guardia deja pasar este cambio de estado porque es la carga del archivo quien lo hace.
+    r.flags.cargando = True
     r.save()
+    _avisar_si_el_lote_ya_tiene_resultado(r)
     return r
+
+
+def _distinto(a, b):
+    """Dos valores del mismo campo, comparados como los guarda Frappe: un None y un '' son lo mismo,
+    y un Currency es un número (1160 y 1160.0 no son un cambio)."""
+    if isinstance(a, (int, float)) or isinstance(b, (int, float)):
+        return abs(flt(a) - flt(b)) > TOLERANCIA
+    return str(a or "") != str(b or "")
+
+
+def _guardia_de_lo_aplicado(doc):
+    """Lo que escribe la aplicación de los pagos no se edita a mano.
+
+    El DocType marca estos campos `read_only`, pero eso es del formulario: por la API (o por un
+    `save()` de una consola) se escriben igual, y ahí lo que está en juego es dar una factura por
+    pagada sin que exista el pago, o al revés. Las funciones de este módulo pasan por encima de la
+    guardia con `db_set` (que no corre `validate`) o con `doc.flags`."""
+    antes = doc.get_doc_before_save()
+    if not antes:
+        return          # un resultado nuevo: todavía no hay nada aplicado que proteger
+    for campo in DE_LA_APLICACION:
+        # `cargar_archivo` sí vuelve a dejar el estado en 'Importado': el archivo nuevo se rejuzga.
+        if campo == "estado" and doc.flags.cargando:
+            continue
+        if _distinto(doc.get(campo), antes.get(campo)):
+            frappe.throw(_("'{0}' lo escribe la aplicación de los pagos del banco, no se cambia a "
+                           "mano (decía '{1}' y se intentó dejar '{2}').")
+                         .format(_(doc.meta.get_label(campo)), antes.get(campo) or "", doc.get(campo) or ""))
+    previos = {m.name: m for m in antes.movimientos}
+    for m in doc.movimientos:
+        viejo = previos.get(m.name)
+        if not viejo:
+            continue    # una línea nueva: no puede traer nada de una aplicación que no ocurrió
+        for campo in DE_LA_APLICACION_MOV:
+            if _distinto(m.get(campo), viejo.get(campo)):
+                frappe.throw(_("La línea {0} tiene '{1}' puesto por la aplicación de los pagos: no se "
+                               "cambia a mano.").format(viejo.linea, _(m.meta.get_label(campo))))
+        if viejo.pago:
+            for campo in CONGELADOS_CON_PAGO:
+                if _distinto(m.get(campo), viejo.get(campo)):
+                    frappe.throw(_("La línea {0} ya tiene el pago {1}: editarla no deshace el pago, "
+                                   "sólo deja el resultado mintiendo. Para deshacerlo, cancela el "
+                                   "pago.").format(viejo.linea, viejo.pago))
+    vivas = {m.name for m in doc.movimientos}
+    for viejo in antes.movimientos:
+        if viejo.pago and viejo.name not in vivas:
+            frappe.throw(_("La línea {0} ya tiene el pago {1}: no se puede quitar del resultado. Para "
+                           "deshacerlo, cancela el pago.").format(viejo.linea, viejo.pago))
+
+
+def _otro_resultado_aplicado(doc):
+    """Otro Resultado Bancario del mismo lote que ya creó pagos, si lo hay.
+
+    Un segundo archivo del banco sobre el mismo lote está permitido (puede llegar una corrección),
+    pero conviene decirlo: lo que ya se pagó no se vuelve a pagar (de eso se encarga la idempotencia
+    por transferencia de `aplicar_resultado`), así que el segundo resultado siempre va a "faltarle"
+    algo respecto de lo que dice el archivo."""
+    if not doc.lote:
+        return None
+    # Se pregunta por `aplicado_el` y no por el estado: un resultado que creó pagos y además traía
+    # diferencias queda en 'Con diferencias' (y puede acabar en 'Revisado'), no en 'Aplicado'.
+    return frappe.db.get_value("Resultado Bancario",
+                               {"lote": doc.lote, "aplicado_el": ("is", "set"),
+                                "name": ("!=", doc.name or "")}, "name")
+
+
+def _avisar_si_el_lote_ya_tiene_resultado(doc):
+    """El aviso en pantalla de lo mismo que queda escrito en `diferencias`: quien está capturando el
+    segundo resultado de un lote tiene que enterarse ahí mismo, no al leer el campo después."""
+    otro = _otro_resultado_aplicado(doc)
+    if otro:
+        frappe.msgprint(_("El lote {0} ya tiene el resultado {1} aplicado. Puedes seguir: lo que ya "
+                          "se pagó no se volverá a pagar, sólo se crearán los pagos que falten.")
+                        .format(doc.lote, otro), title=_("El lote ya tiene un resultado aplicado"),
+                        indicator="orange")
 
 
 def validar_resultado(doc, method=None):
     """Hook `validate` del Resultado Bancario: los totales, el cruce con el lote y las diferencias.
 
-    No bloquea nada (un resultado con diferencias se guarda igual): deja por escrito qué no cuadra
-    para que Tesorería lo mire antes de crear los pagos."""
+    No bloquea nada de lo que Tesorería captura (un resultado con diferencias se guarda igual): deja
+    por escrito qué no cuadra para que lo mire antes de crear los pagos. Lo único que sí bloquea es
+    editar a mano lo que escribió la aplicación de los pagos."""
     if not doc.lote:
         return          # el campo es obligatorio: que lo diga la validación de Frappe, no un error aquí
+    if not doc.flags.aplicando:
+        _guardia_de_lo_aplicado(doc)
     lote = frappe.get_doc("Lote de Pago", doc.lote)
     aplicados = [m for m in doc.movimientos if m.estatus == "3"]
     doc.total_calculado = sum(flt(m.importe) for m in aplicados)
@@ -111,6 +198,14 @@ def validar_resultado(doc, method=None):
         return
     por_linea = {(t.linea_tef or t.idx): t for t in lote.transferencias}
     diferencias = []
+    if doc.estatus_archivo in (RECHAZADO, CANCELADO):
+        diferencias.append(_("el banco rechazó o canceló el archivo completo (estatus {0}): ninguna "
+                             "transferencia se pagó").format(doc.estatus_archivo))
+    otro = _otro_resultado_aplicado(doc)
+    if otro:
+        diferencias.append(_("el lote ya tiene el resultado {0} aplicado: de este sólo se crearán los "
+                             "pagos que falten (una transferencia ya pagada no se vuelve a pagar)")
+                           .format(otro))
     # El total del archivo es el de control del registro 4, o sea TODO lo que se mandó: se compara con
     # el total del lote, no con lo aplicado (que es menos si el banco rechazó alguna transferencia).
     if doc.total_archivo and abs(flt(doc.total_archivo) - flt(lote.total_lote)) > TOLERANCIA:

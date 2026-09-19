@@ -1,27 +1,41 @@
 // Botones del resultado del banco: el alta desde el lote para capturar a mano, la carga del archivo
 // que devuelve BancaNet y el visto bueno cuando el archivo no cuadra con el lote.
 // El estado manda: un resultado ya Aplicado no se vuelve a tocar.
-frappe.ui.form.on("Resultado Bancario", {
-	refresh(frm) {
-		const tesoreria = frappe.user_roles.includes("CxP Tesoreria") || frappe.user_roles.includes("System Manager");
-		if (!tesoreria) return;
+// Es Tesorería (o un administrador) quien captura y aplica el resultado del banco.
+function es_tesoreria() {
+	return frappe.user_roles.includes("CxP Tesoreria") || frappe.user_roles.includes("System Manager");
+}
 
-		// Se llega aquí desde "Capturar resultado del banco" del lote: el servidor arma el resultado
-		// con un movimiento por transferencia y el formulario se abre sobre el documento ya guardado.
-		// La bandera evita pedirlo dos veces si el formulario se refresca antes de cambiar de ruta.
-		if (frm.is_new() && frm.doc.lote && !(frm.doc.movimientos || []).length && !frm.__cxp_captura_pedida) {
-			frm.__cxp_captura_pedida = true;
-			frappe.call({
-				method: "gode_cxp.banamex.api.crear_captura_manual",
-				args: { lote: frm.doc.lote },
-				freeze: true,
-				callback: (r) => {
-					if (r.message) frappe.set_route("Form", "Resultado Bancario", r.message);
-				},
-				error: () => { frm.__cxp_captura_pedida = false; },
-			});
-			return;
-		}
+// Un resultado nuevo con lote y sin movimientos se le pide al servidor, que lo arma con una línea
+// por transferencia y lo guarda; el formulario se muda al documento ya guardado. Pasa al llegar
+// desde "Capturar resultado del banco" del lote y también al elegir el lote a mano aquí.
+// La bandera evita pedirlo dos veces si el formulario se refresca antes de cambiar de ruta.
+function pedir_captura(frm) {
+	if (!frm.is_new() || !frm.doc.lote || (frm.doc.movimientos || []).length || frm.__cxp_captura_pedida) return false;
+	frm.__cxp_captura_pedida = true;
+	frappe.call({
+		method: "gode_cxp.banamex.api.crear_captura_manual",
+		args: { lote: frm.doc.lote },
+		freeze: true,
+		callback: (r) => {
+			if (r.message) frappe.set_route("Form", "Resultado Bancario", r.message);
+		},
+		error: () => { frm.__cxp_captura_pedida = false; },
+	});
+	return true;
+}
+
+frappe.ui.form.on("Resultado Bancario", {
+	lote(frm) {
+		// Al elegir el lote a mano en un resultado nuevo: sus transferencias se traen solas, igual
+		// que si se hubiera llegado desde el botón del lote.
+		if (es_tesoreria()) pedir_captura(frm);
+	},
+
+	refresh(frm) {
+		if (!es_tesoreria()) return;
+
+		if (pedir_captura(frm)) return;
 		if (frm.is_new()) return;
 
 		if (frm.doc.estado !== "Aplicado") {

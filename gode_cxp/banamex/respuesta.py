@@ -54,9 +54,16 @@ POS_NUM_ERROR = slice(234, 238)              # registro 3, posiciones 235-238
 POS_MENSAJE = slice(238, 269)                # registro 3, posiciones 239-269
 
 APLICADO, CANCELADO, RECHAZADO = "30", "10", "32"
-# Si el banco tumba el archivo COMPLETO puede devolverlo sin estatus por transferencia: no se pagó
-# nada, así que cada línea cuenta como rechazada y el motivo dice por qué.
-MOTIVO_ARCHIVO = {RECHAZADO: "archivo rechazado por el banco", CANCELADO: "archivo cancelado"}
+# Lo único que el banco pone en el estatus del archivo. Cualquier otra cosa ahí significa que los
+# campos del layout no están donde los esperamos, y entonces TODO lo demás que leamos es inventado.
+ESTATUS_ARCHIVO = (APLICADO, CANCELADO, RECHAZADO)
+# Si el banco tumba el archivo COMPLETO no pagó nada: cada línea cuenta como rechazada y el motivo
+# dice por qué, aunque la línea traiga un 3 (el estatus del archivo manda sobre el de la línea).
+MOTIVO_ARCHIVO = {RECHAZADO: "archivo rechazado por el banco",
+                  CANCELADO: "archivo cancelado por el banco"}
+# Lo que se le dice a quien suba un archivo que no cuadra con el layout: es siempre el mismo problema.
+NO_CUADRA = ("el archivo no cuadra con el layout de exportación (¿es el archivo que devolvió el "
+             "banco, completo y sin editar?)")
 
 
 class RespuestaInvalida(ValueError):
@@ -70,11 +77,23 @@ def _clave(texto):
     return re.sub(r"\s+", " ", sin_acentos.lower().strip().strip('"'))
 
 
-def _importe(texto):
+def _importe(texto, donde=""):
+    """El importe de una línea. No se adivina nada: un importe en blanco no es cero (es un archivo
+    que no entendimos) y una coma decimal al estilo europeo (`3.275,10`) no se convierte a la
+    brava, porque quitarle las comas lo multiplicaría por cien."""
+    donde = f" en {donde}" if donde else ""
+    crudo = str(texto or "").replace("$", "").replace(" ", "").strip('"').strip()
+    if not crudo:
+        raise RespuestaInvalida(f"importe vacío{donde}")
+    # Un separador de miles siempre agrupa de tres en tres: una coma con uno o dos dígitos detrás
+    # sólo puede ser un decimal, y entonces el archivo no viene en el formato que esperamos.
+    if re.search(r",\d{1,2}$", crudo):
+        raise RespuestaInvalida(f"importe con coma decimal{donde}: {texto!r}; el archivo del banco "
+                                "usa el punto como decimal, así que este hay que capturarlo a mano")
     try:
-        return Decimal(str(texto).replace("$", "").replace(",", "").replace(" ", "").strip('"') or "0")
+        return Decimal(crudo.replace(",", ""))
     except InvalidOperation:
-        raise RespuestaInvalida(f"importe ilegible: {texto!r}")
+        raise RespuestaInvalida(f"importe ilegible{donde}: {texto!r}")
 
 
 def _sin_ceros(texto):
@@ -125,7 +144,7 @@ def _leer_csv(datos):
             "beneficiario": col("beneficiario")[:LARGO_BENEFICIARIO],
             # El portal escribe la cuenta con espacios o guiones; al lote entró sólo con dígitos.
             "cuenta": re.sub(r"\D", "", col("cuenta"))[-LARGO_CUENTA:],
-            "importe": _importe(col("importe")),
+            "importe": _importe(col("importe"), f"la fila {n}"),
             "estatus": estatus,
             "motivo": col("motivo")[:LARGO_MOTIVO],
             "clave_rastreo": col("clave_rastreo")[:LARGO_CLAVE],
@@ -144,7 +163,26 @@ def _motivo(extra):
     return " ".join(parte for parte in (numero, mensaje) if parte)
 
 
+def _canario(extra, linea):
+    """Que los campos de respuesta estén DONDE los esperamos, antes de creerles nada.
+
+    Las posiciones de la exportación están deducidas sumando longitudes (la ayuda de BancaNet no las
+    numera), así que un archivo corrido un solo carácter se leería igual de bien y con el estatus de
+    otro campo: dar por pagada una transferencia que el banco rechazó. Dos campos delatan el
+    corrimiento: 'error originado' viene siempre en blancos, y la autorización siempre en dígitos
+    (en ceros cuando no pagó) o en blancos."""
+    if extra[POS_ERROR_ORIGINADO].strip():
+        raise RespuestaInvalida(
+            f"la línea {linea} trae {extra[POS_ERROR_ORIGINADO]!r} donde el banco deja blancos: "
+            f"{NO_CUADRA}")
+    autorizacion = extra[POS_AUTORIZACION].strip()
+    if autorizacion and not autorizacion.isdigit():
+        raise RespuestaInvalida(
+            f"la autorización de la línea {linea} dice {autorizacion!r} y no son dígitos: {NO_CUADRA}")
+
+
 def _movimiento(t, extra, estatus_archivo):
+    _canario(extra, t["linea"])
     crudo = extra[POS_ESTATUS].strip()
     estatus = ESTATUS.get(crudo)
     motivo = _motivo(extra)
@@ -194,12 +232,23 @@ def _leer_layout(datos):
         raise RespuestaInvalida(f"el cuerpo del archivo no es un TEF versión C válido: {e}")
     r1 = next(l for l in respuesta if l[:1] == "1")
     estatus_archivo = r1[POS_ESTATUS_ARCHIVO].strip() or None
+    if estatus_archivo is not None and estatus_archivo not in ESTATUS_ARCHIVO:
+        # El mismo canario que el de cada registro 3, un registro más arriba.
+        raise RespuestaInvalida(f"el estatus del archivo dice {estatus_archivo!r} y sólo puede ser "
+                                f"30 (aplicado), 32 (rechazado) o 10 (cancelado): {NO_CUADRA}")
     extras = [l for l in respuesta if l[:1] == "3"]
+    movimientos = [_movimiento(t, extra, estatus_archivo)
+                   for t, extra in zip(lote["transferencias"], extras)]
+    if estatus_archivo in MOTIVO_ARCHIVO:
+        # El banco tumbó el archivo entero: no pagó NADA. Un '3' por línea es una contradicción del
+        # banco consigo mismo, y de las dos versiones la única segura es que no hubo pago.
+        for m in movimientos:
+            m["estatus"] = "5"
+            m["motivo"] = m["motivo"] or MOTIVO_ARCHIVO[estatus_archivo]
     return {
         "estatus_archivo": estatus_archivo,
         "autorizacion": _sin_ceros(r1[POS_AUTORIZACION_ARCHIVO]) or None,
-        "movimientos": [_movimiento(t, extra, estatus_archivo)
-                        for t, extra in zip(lote["transferencias"], extras)],
+        "movimientos": movimientos,
         "total_archivo": lote["total"],
     }
 
@@ -212,13 +261,14 @@ def leer_respuesta(datos, nombre_archivo=""):
     Qué lector se usa lo decide el CONTENIDO, no la extensión (`nombre_archivo` sólo sirve para los
     mensajes): un registro 1 del layout C empieza con "1" y el número de contrato, o sea 13 dígitos.
     """
+    nombre = nombre_archivo or "el archivo del banco"
     if not datos or not datos.strip():
-        raise RespuestaInvalida("archivo vacío")
+        raise RespuestaInvalida(f"{nombre} está vacío")
     cabeza = datos.lstrip()[:13]
     es_layout = cabeza[:1] == b"1" and len(cabeza) == 13 and cabeza.isdigit()
     r = _leer_layout(datos) if es_layout else _leer_csv(datos)
     if not r["movimientos"]:
-        raise RespuestaInvalida("el archivo no trae movimientos")
+        raise RespuestaInvalida(f"{nombre} no trae movimientos")
     r["num_aplicados"] = sum(1 for m in r["movimientos"] if m["estatus"] == "3")
     r["num_rechazados"] = sum(1 for m in r["movimientos"] if m["estatus"] == "5")
     return r

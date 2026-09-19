@@ -37,6 +37,10 @@ doc_events = {
         "on_cancel": "gode_cxp.pagos.eventos.al_cancelar",
         "on_trash": "gode_cxp.pagos.eventos.antes_de_borrar",
     },
+    # Lo que contestó el banco: los totales, el cruce con las transferencias del lote y las
+    # diferencias se calculan al guardar, tanto si el resultado se captura a mano en el formulario
+    # como si lo arma la carga del archivo (banamex/aplicar.py).
+    "Resultado Bancario": {"validate": "gode_cxp.banamex.aplicar.validar_resultado"},
 }
 
 doctype_js = {"Bank Account": "public/js/bank_account.js"}

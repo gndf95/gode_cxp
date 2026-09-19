@@ -220,12 +220,13 @@ def _limpiar():
     for correo in USUARIOS_PRUEBA:
         frappe.clear_cache(user=correo)
     # Las pruebas de la bandeja suben XML, ZIP y PDF sueltos (File sin adjuntar), las del
-    # pre-registro dejan el XLSX de la plantilla y el TXT de la respuesta del banco. Los que nadie
-    # borra (un archivo ajeno, uno que falló) se quedarían acumulándose en el sitio de pruebas.
+    # pre-registro dejan el XLSX de la plantilla y el TXT de la respuesta del banco, y las del
+    # resultado bancario el CSV que se exporta del portal. Los que nadie borra (un archivo ajeno, uno
+    # que falló) se quedarían acumulándose en el sitio de pruebas.
     for name in frappe.get_all("File", filters={"attached_to_doctype": ["is", "not set"], "is_folder": 0},
                                or_filters=[["file_name", "like", "%.xml"], ["file_name", "like", "%.zip"],
                                            ["file_name", "like", "%.pdf"], ["file_name", "like", "%.xlsx"],
-                                           ["file_name", "like", "%.txt"]],
+                                           ["file_name", "like", "%.txt"], ["file_name", "like", "%.csv"]],
                                pluck="name"):
         frappe.delete_doc("File", name, force=1, ignore_permissions=True, delete_permanently=True)
     frappe.db.commit()

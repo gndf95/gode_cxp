@@ -31,10 +31,19 @@ def bloquear_facturas(nombres) -> dict[str, dict]:
     nombres = sorted({n for n in nombres if n})   # ordenados: dos sesiones no se abrazan
     if not nombres:
         return {}
-    filas = frappe.db.sql("""select name, en_lote, outstanding_amount, docstatus, on_hold,
-                                   estado_revision, currency, company, supplier
-                            from `tabPurchase Invoice` where name in %s order by name for update""",
-                          (nombres,), as_dict=True)
+    try:
+        filas = frappe.db.sql("""select name, en_lote, outstanding_amount, docstatus, on_hold,
+                                       estado_revision, currency, company, supplier
+                                from `tabPurchase Invoice` where name in %s order by name for update""",
+                              (nombres,), as_dict=True)
+    except frappe.QueryDeadlockError:
+        # MariaDB 11.8 trae innodb_snapshot_isolation: si otra sesión cambió y confirmó una de estas
+        # facturas después de que empezó esta transacción, el FOR UPDATE no entrega el dato viejo ni el
+        # nuevo: falla con 1020 "Record has changed since last read". Es el candado funcionando; se le
+        # dice a la persona qué pasó y la operación entera se deshace.
+        frappe.throw(_("Otra persona acaba de modificar alguna de estas facturas (OTRO proceso las cambió mientras "
+                       "trabajabas). No se hizo nada: vuelve a abrir el lote e inténtalo de nuevo."),
+                     title=_("Facturas modificadas por otra sesión"))
     return {fila.name: fila for fila in filas}
 
 

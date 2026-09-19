@@ -1,8 +1,9 @@
-"""Puntos de entrada del escritorio para los lotes de pago.
+"""Puntos de entrada del escritorio para los lotes de pago y para el alta de cuentas en BancaNet.
 
-Sin lógica: sólo comprueba el rol y delega en pagos.lotes. El permiso se pide aquí y no en el DocType
-porque estas llamadas mueven dinero al banco (generar el archivo, declararlo transmitido) y el
-permiso de escritura del Lote de Pago no alcanza para distinguirlas de guardar una nota.
+Sin lógica: sólo comprueba el permiso y delega en pagos.lotes o pagos.preregistro. El permiso se pide
+aquí y no en el DocType porque estas llamadas mueven dinero al banco (generar el archivo, declararlo
+transmitido, dar de alta la cuenta a la que se le va a pagar) y el permiso de escritura del documento
+no alcanza para distinguirlas de guardar una nota.
 """
 import frappe
 from frappe import _

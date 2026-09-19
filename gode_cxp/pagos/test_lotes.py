@@ -3,10 +3,11 @@ from datetime import date
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
+from frappe.utils import now_datetime
 
 from gode_cxp.cfdi import ejemplos
 from gode_cxp.facturas import pruebas_comun
-from gode_cxp.facturas.pruebas_comun import cuenta_verificada, factura_aprobada, xml_con
+from gode_cxp.facturas.pruebas_comun import cuenta_verificada, factura_aprobada, usuario, xml_con
 from gode_cxp.pagos.lotes import crear_lotes, facturas_pagables, generar_archivo, marcar_transmitido, nuevo_lote_pendientes
 from gode_cxp.pagos.tef import leer_tef
 from gode_cxp.setup.produccion import configurar_pagos
@@ -16,6 +17,10 @@ CLABE_12 = "072180007090045065"
 # verificador mal y validar_clabe la rechaza).
 CLABE_06 = "002180012345678906"
 FECHA = date(2026, 9, 17)
+TESORERIA = "prueba.tesoreria@cxp.local"
+# Una empresa que no existe: sirve para simular datos de otra empresa del sitio sin dar de alta un
+# catálogo de cuentas entero (frappe.db.set_value no valida los Link).
+OTRA_EMPRESA = "EMPRESA AJENA"
 
 
 class TestLotes(FrappeTestCase):
@@ -39,6 +44,32 @@ class TestLotes(FrappeTestCase):
 
     def tearDown(self):
         frappe.set_user("Administrator")
+
+    def _lote_a_mano(self, filas, importe=None, **extras):
+        """Lote capturado 'a mano' (como desde el formulario), para probar lo que crear_lotes no
+        puede producir: filas repetidas de la misma factura, o un lote nuevo que ya trae secuencial.
+
+        `filas` = [(factura, importe)]; todas cuelgan de una sola transferencia del proveedor A."""
+        lote = frappe.new_doc("Lote de Pago")
+        lote.update({"company": pruebas_comun.EMPRESA, "fecha_pago": FECHA, "naturaleza": "12",
+                     "concepto": "pago gode", "referencia_numerica": "0170926",
+                     "cuenta_bancaria_empresa": frappe.db.get_single_value("Configuracion CxP", "cuenta_bancaria_empresa")})
+        lote.append("transferencias", {
+            "proveedor": self.fa1.supplier, "cuenta_bancaria": self.cta_a, "cuenta_tef": CLABE_12,
+            "beneficiario_tef": frappe.db.get_value("Bank Account", self.cta_a, "nombre_tef"),
+            "importe": importe if importe is not None else sum(i for _f, i in filas)})
+        for factura, imp in filas:
+            lote.append("facturas", {"transferencia": 1, "proveedor": self.fa1.supplier,
+                                     "factura": factura, "importe": imp})
+        lote.update(extras)
+        return lote
+
+    def _lote_transmitido(self, importe=100):
+        (nombre,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": importe}])
+        frappe.get_doc("Lote de Pago", nombre).submit()
+        generar_archivo(nombre)
+        marcar_transmitido(nombre, "119938")
+        return nombre
 
     def test_facturas_pagables(self):
         nombres = {f["name"] for f in facturas_pagables(pruebas_comun.EMPRESA)}
@@ -87,6 +118,75 @@ class TestLotes(FrappeTestCase):
         borrador.insert(ignore_permissions=True)
         with self.assertRaises(frappe.ValidationError):   # factura no aprobada
             crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": borrador.name, "importe": 100}])
+
+    def test_la_misma_factura_dos_veces_no_se_paga_doble(self):
+        """El candado más importante: dos partidas (o dos filas) de la misma factura sumaban sin que
+        nadie comparara el total contra el saldo, así que el proveedor cobraba dos veces."""
+        with self.assertRaises(frappe.ValidationError):   # desde crear_lotes
+            crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 600},
+                                                       {"factura": self.fa1.name, "importe": 600}])
+        with self.assertRaises(frappe.ValidationError):   # y en un lote armado a mano
+            self._lote_a_mano([(self.fa1.name, 600), (self.fa1.name, 600)]).insert()
+
+    def test_el_secuencial_no_se_reutiliza_aunque_se_cancele_el_lote(self):
+        """Un secuencial que ya se usó pudo irse al banco: reutilizarlo mandaría dos archivos con el
+        mismo número de lote y BancaNet no distingue cuál es cuál."""
+        (n1,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+        l1 = frappe.get_doc("Lote de Pago", n1); l1.submit(); generar_archivo(n1)
+        self.assertEqual(frappe.db.get_value("Lote de Pago", n1, "secuencial"), 1)
+        l1.reload(); l1.cancel()
+        (n2,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa2.name, "importe": 100}])
+        frappe.get_doc("Lote de Pago", n2).submit(); generar_archivo(n2)
+        self.assertEqual(frappe.db.get_value("Lote de Pago", n2, "secuencial"), 2)
+
+    def test_el_banco_solo_admite_99_lotes_por_dia(self):
+        (n1,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+        frappe.get_doc("Lote de Pago", n1).submit(); generar_archivo(n1)
+        frappe.db.set_value("Lote de Pago", n1, "secuencial", 99, update_modified=False)
+        (n2,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa2.name, "importe": 100}])
+        frappe.get_doc("Lote de Pago", n2).submit()
+        with self.assertRaises(frappe.ValidationError):
+            generar_archivo(n2)
+
+    def test_un_lote_nuevo_nace_sin_secuencial_ni_archivo(self):
+        """Nadie puede estrenar un lote con el secuencial, el archivo o el estado de otro: son los
+        campos que dicen qué se mandó al banco."""
+        lote = self._lote_a_mano(
+            [(self.fa1.name, 100)], secuencial=7, nombre_archivo="170926-0007-12.txt",
+            archivo_tef="/private/files/170926-0007-12.txt", generado_el=now_datetime(),
+            transmitido_el=now_datetime(), autorizacion_banco="999999", estado_lote="Transmitido")
+        lote.transferencias[0].update({"estado_pago": "Aplicado", "linea_tef": 3, "clave_rastreo": "ABC123",
+                                       "motivo_rechazo": "cuenta inexistente"})
+        lote.insert()
+        lote.reload()
+        self.assertEqual(lote.estado_lote, "Preparado")
+        for campo in ("secuencial", "nombre_archivo", "archivo_tef", "generado_el", "transmitido_el",
+                      "autorizacion_banco"):
+            self.assertFalse(lote.get(campo), f"{campo} debería nacer vacío")
+        t = lote.transferencias[0]
+        self.assertEqual(t.estado_pago, "Pendiente")
+        for campo in ("linea_tef", "clave_rastreo", "motivo_rechazo", "pago", "reintentado_en"):
+            self.assertFalse(t.get(campo), f"transferencia.{campo} debería nacer vacío")
+
+    def test_la_enmienda_de_un_lote_cancelado_nace_limpia(self):
+        """El botón 'Amend' del escritorio copia hasta los campos no_copy, así que la enmienda
+        llegaría con el secuencial y el archivo del lote que ya se mandó al banco. frappe.copy_doc
+        con sus valores por omisión hace exactamente lo mismo."""
+        (nombre,) = crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])
+        lote = frappe.get_doc("Lote de Pago", nombre); lote.submit(); generar_archivo(nombre)
+        lote.reload(); lote.cancel(); lote.reload()
+        self.assertEqual((lote.estado_lote, lote.secuencial), ("Cancelado", 1))
+        enmienda = frappe.copy_doc(lote)
+        enmienda.amended_from = lote.name
+        enmienda.docstatus = 0
+        enmienda.insert()
+        self.assertEqual(enmienda.estado_lote, "Preparado")
+        self.assertFalse(enmienda.secuencial)
+        self.assertFalse(enmienda.nombre_archivo)
+        self.assertFalse(enmienda.archivo_tef)
+        self.assertFalse(enmienda.generado_el)
+        self.assertEqual(enmienda.transferencias[0].estado_pago, "Pendiente")
+        self.assertFalse(enmienda.transferencias[0].linea_tef)
 
     def test_factura_en_dos_lotes_bloqueada(self):
         crear_lotes(pruebas_comun.EMPRESA, FECHA, [{"factura": self.fa1.name, "importe": 100}])

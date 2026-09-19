@@ -73,6 +73,13 @@ class TestGenerador(unittest.TestCase):
             with self.assertRaises(TefInvalido):
                 generar_tef(malo)
 
+    def test_el_secuencial_del_banco_va_de_1_a_99(self):
+        """BancaNet Empresarial sólo admite los lotes 0001 a 0099 de cada día: el 100 no existe."""
+        generar_tef(dict(LOTE_12, secuencial=99))
+        for malo in (0, 100, 9999):
+            with self.assertRaises(TefInvalido):
+                generar_tef(dict(LOTE_12, secuencial=malo))
+
     def test_rechaza_caracteres_de_control(self):
         """Un salto de línea o un tabulador dentro de un campo corre el archivo de ancho fijo
         completo: el banco lo rechazaría. Ningún campo los admite, tampoco el concepto (que sí puede

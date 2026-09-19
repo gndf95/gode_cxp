@@ -44,7 +44,7 @@ PERMISOS = {
 }
 
 # Reportes estándar que están como atajo en el workspace de CxP.
-REPORTES = ("Accounts Payable", "Accounts Payable Summary")
+REPORTES = ("Accounts Payable", "Accounts Payable Summary", "Pagos por lote COI", "Facturas en lotes")
 
 MODULOS_VISIBLES = {"Cuentas por Pagar", "Accounts", "Buying", "Desk", "Core", "Setup", "Contacts", "Stock", "Printing", "Email", "Custom"}
 

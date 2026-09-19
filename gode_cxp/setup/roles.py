@@ -44,7 +44,10 @@ PERMISOS = {
 }
 
 # Reportes estándar que están como atajo en el workspace de CxP.
-REPORTES = ("Accounts Payable", "Accounts Payable Summary", "Pagos por lote COI", "Facturas en lotes")
+# Solo los reportes ESTÁNDAR de ERPNext necesitan Custom Role (unión de sus roles + los de CxP).
+# Los reportes propios de la app ("Pagos por lote COI", "Facturas en lotes") traen sus roles en su
+# propio JSON: meterlos aquí les daría acceso a Accounts User sin que nadie lo haya pedido.
+REPORTES = ("Accounts Payable", "Accounts Payable Summary")
 
 MODULOS_VISIBLES = {"Cuentas por Pagar", "Accounts", "Buying", "Desk", "Core", "Setup", "Contacts", "Stock", "Printing", "Email", "Custom"}
 

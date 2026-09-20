@@ -87,9 +87,8 @@ def factura_aprobada(xml_bytes, nombre="factura.xml"):
     try:
         cfdi = procesar_xml(xml_bytes, "Carga manual", nombre)
         pi = frappe.get_doc("Purchase Invoice", crear_factura_desde_cfdi(cfdi.name))
-        pi = apply_workflow(pi, "Enviar a revisión")
-        pi.recepcion_confirmada = 1
-        pi.save()
+        # Dos transiciones y ninguna casilla: 'Confirmar recepción' marca `recepcion_confirmada` sola
+        # (ver facturas/eventos.validar_factura).
         pi = apply_workflow(pi, "Confirmar recepción")
         pi = apply_workflow(pi, "Aprobar")
         return frappe.get_doc("Purchase Invoice", pi.name)

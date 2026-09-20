@@ -48,6 +48,22 @@ class TestApiPagos(FrappeTestCase):
     def _partidas(self, importe=100):
         return json.dumps([{"factura": self.fa.name, "importe": importe}])
 
+    def _respuesta_limpia(self):
+        """`descargar_archivo` escribe en `frappe.local.response`, que es global de la petición: en
+        las pruebas hay una sola, así que se restaura al terminar para no ensuciar a las demás."""
+        antes = dict(frappe.local.response)
+
+        def restaurar():
+            frappe.local.response.clear()
+            frappe.local.response.update(antes)
+        self.addCleanup(restaurar)
+
+    def _lote_exportado(self):
+        """Un lote autorizado y con su archivo TEF ya generado."""
+        (lote,) = api.crear_lotes(pruebas_comun.EMPRESA, str(date.today()), self._partidas())
+        frappe.get_doc("Lote de Pago", lote).submit()
+        return lote, api.generar_archivo(lote)
+
     def _solo_ve(self, doctype, valor):
         """Le deja al usuario de Tesorería un único documento permitido de `doctype`, o sea le niega
         todos los demás. Es la forma real de ejercitar las User Permissions por empresa sin dar de
@@ -142,3 +158,43 @@ class TestApiPagos(FrappeTestCase):
         self.assertTrue(respuesta["nombre_archivo"].endswith("-12.txt"))
         self.assertEqual(api.marcar_transmitido(lote, "119938"), lote)
         self.assertEqual(frappe.db.get_value("Lote de Pago", lote, "estado_lote"), "Transmitido")
+
+    # ------------------------------------------------- descarga del archivo TEF
+
+    def test_descargar_el_archivo_lo_baja_en_vez_de_abrirlo(self):
+        """El `file_url` privado se lo sirve Frappe al navegador como texto plano y BancaNet
+        necesita el .txt en disco. `frappe.response.type = "download"` es lo que hace que la
+        respuesta salga con Content-Disposition: attachment (frappe/utils/response.py::as_raw)."""
+        frappe.set_user(TESORERIA)
+        lote, generado = self._lote_exportado()
+        self._respuesta_limpia()
+        api.descargar_archivo(lote)
+        self.assertEqual(frappe.local.response["type"], "download")
+        self.assertEqual(frappe.local.response["filename"], generado["nombre_archivo"])
+        # los mismos bytes del File adjunto, sin recodificar: el archivo va en ancho fijo con CRLF
+        adjunto = frappe.get_doc("File", frappe.db.get_value("File", {"file_url": generado["file_url"]}, "name"))
+        contenido = frappe.local.response["filecontent"]
+        self.assertIsInstance(contenido, bytes)
+        self.assertEqual(contenido, adjunto.get_content())
+        self.assertTrue(contenido.endswith(b"\r\n"), contenido[-4:])
+
+    def test_descargar_el_archivo_respeta_el_permiso_sobre_el_lote(self):
+        """Igual que los botones que mueven dinero: el rol es global, el archivo lleva los datos
+        bancarios de los proveedores, y las User Permissions sólo se aplican mirando el documento."""
+        lote, _ = self._lote_exportado()
+        self._solo_ve("Lote de Pago", "LOTE-QUE-NO-ES-ESTE")
+        self._respuesta_limpia()
+        frappe.set_user(TESORERIA)
+        with self.assertRaises(frappe.PermissionError):
+            api.descargar_archivo(lote)
+        frappe.set_user(AJENO)
+        with self.assertRaises(frappe.PermissionError):
+            api.descargar_archivo(lote)
+
+    def test_descargar_un_lote_sin_archivo_lo_dice_en_espanol(self):
+        frappe.set_user(TESORERIA)
+        (lote,) = api.crear_lotes(pruebas_comun.EMPRESA, str(date.today()), self._partidas())
+        self._respuesta_limpia()
+        with self.assertRaises(frappe.ValidationError):
+            api.descargar_archivo(lote)
+        self.assertNotIn("filecontent", frappe.local.response)

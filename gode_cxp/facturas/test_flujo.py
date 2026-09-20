@@ -1,6 +1,9 @@
 """Flujo de revisión de la factura: transiciones, condiciones y qué puede hacer cada rol."""
+import json
+
 import frappe
-from frappe.model.workflow import WorkflowPermissionError, WorkflowTransitionError, apply_workflow
+from frappe.model.workflow import (WorkflowPermissionError, WorkflowTransitionError, apply_workflow,
+                                   bulk_workflow_approval)
 from frappe.tests.utils import FrappeTestCase
 
 from gode_cxp.cfdi import ejemplos
@@ -66,10 +69,21 @@ class TestFlujo(FrappeTestCase):
             frappe.set_user("Administrator")
 
     def _aprobar(self):
-        self._como(REVISOR, "Enviar a revisión")
-        self._escribir(REVISOR, recepcion_confirmada=1)
         self._como(REVISOR, "Confirmar recepción")
         self._como(TESORERIA, "Aprobar")
+
+    def _otra_factura(self, uuid, folio):
+        """Otra factura recibida, para las acciones en bloque (el UUID lleva índice único)."""
+        cfdi = procesar_xml(pruebas_comun.xml_con(ejemplos.INGRESO_40, uuid, folio), "SAT")
+        return crear_factura_desde_cfdi(cfdi.name)
+
+    def _accion_pendiente(self):
+        """Un 'Workflow Action' abierto como los que Frappe crea solo al guardar la factura."""
+        accion = frappe.get_doc({"doctype": "Workflow Action", "reference_doctype": "Purchase Invoice",
+                                 "reference_name": self.pi.name, "workflow_state": "Recibida",
+                                 "status": "Open"})
+        accion.append("permitted_roles", {"role": roles.REV})
+        return accion.insert(ignore_permissions=True).name
 
     def _enmendar(self, doc):
         """Imita el botón 'Amend' del escritorio: copia TODO, incluso los campos no_copy
@@ -85,63 +99,141 @@ class TestFlujo(FrappeTestCase):
     # ------------------------------------------------------------------ flujo
 
     def test_flujo_completo(self):
+        """Dos clics, no cinco: Recibida → 'Confirmar recepción' → Revisada → 'Aprobar'."""
         self.assertEqual(self.pi.estado_revision, "Recibida")
-        self._como(REVISOR, "Enviar a revisión")
-        self.assertEqual(self.pi.estado_revision, "En revisión")
-        self._escribir(REVISOR, recepcion_confirmada=1)
-        self.assertEqual(self.pi.recepcion_confirmada_por, REVISOR)
-        self.assertIsNotNone(self.pi.recepcion_confirmada_el)
         self._como(REVISOR, "Confirmar recepción")
         self.assertEqual(self.pi.estado_revision, "Revisada")
+        # la acción confirma la recepción sola: ya no hay casilla que marcar ni guardado aparte
+        self.assertEqual(self.pi.recepcion_confirmada, 1)
+        self.assertEqual(self.pi.recepcion_confirmada_por, REVISOR)
+        self.assertIsNotNone(self.pi.recepcion_confirmada_el)
         self._como(TESORERIA, "Aprobar")
         self.assertEqual((self.pi.estado_revision, self.pi.docstatus), ("Aprobada", 1))
         self.assertGreater(self.pi.outstanding_amount, 0)
 
+    def test_enviar_a_revision_ya_no_es_un_paso(self):
+        """El paso que sobraba se retiró: de 'Recibida' ya no se puede 'Enviar a revisión'."""
+        with self.assertRaises(WorkflowTransitionError):
+            self._como(REVISOR, "Enviar a revisión")
+        self.pi.reload()
+        self.assertEqual(self.pi.estado_revision, "Recibida")
+
     def test_revisor_no_aprueba(self):
-        self._como(REVISOR, "Enviar a revisión")
-        self._escribir(REVISOR, recepcion_confirmada=1)
         self._como(REVISOR, "Confirmar recepción")
         with self.assertRaises(SIN_PERMISO):
             self._como(REVISOR, "Aprobar")
         self.pi.reload()
         self.assertEqual((self.pi.estado_revision, self.pi.docstatus), ("Revisada", 0))
 
-    def test_confirmar_recepcion_exige_la_marca(self):
-        self._como(REVISOR, "Enviar a revisión")
-        with self.assertRaises(frappe.ValidationError):
-            self._como(REVISOR, "Confirmar recepción")
+    def test_tesoreria_no_aprueba_lo_que_nadie_ha_recibido(self):
+        """Se conserva la separación 'uno confirma la recepción, otro aprueba': una factura Recibida
+        no se aprueba de un golpe, aunque quien la mueva tenga los dos roles. Así quedan dos
+        registros, el de quién recibió el producto y el de quién autorizó el pago."""
+        with self.assertRaises(SIN_PERMISO):
+            self._como(TESORERIA, "Aprobar")
+        self.pi.reload()
+        self.assertEqual((self.pi.estado_revision, self.pi.docstatus), ("Recibida", 0))
+
+    def test_confirmar_recepcion_no_pisa_el_sello_que_ya_estaba(self):
+        """Si alguien marcó la casilla antes (a mano o desde la ficha), el sello es suyo: la acción
+        sólo rellena lo que falta."""
+        self._escribir(TESORERIA, recepcion_confirmada=1)
+        self.assertEqual(self.pi.recepcion_confirmada_por, TESORERIA)
+        self._como(REVISOR, "Confirmar recepción")
+        self.assertEqual(self.pi.estado_revision, "Revisada")
+        self.assertEqual(self.pi.recepcion_confirmada_por, TESORERIA)
+
+    def test_una_factura_en_revision_sigue_avanzando(self):
+        """'En revisión' se conserva en la lista de estados por las facturas que ya estén ahí cuando
+        migre producción: desde ahí se confirma la recepción sin casilla, igual que desde Recibida."""
+        frappe.db.set_value("Purchase Invoice", self.pi.name, "estado_revision", "En revisión")
+        self.pi.reload()
+        self._como(REVISOR, "Confirmar recepción")
+        self.assertEqual((self.pi.estado_revision, self.pi.recepcion_confirmada), ("Revisada", 1))
 
     def test_aclaracion_y_rechazo(self):
-        self._como(REVISOR, "Enviar a revisión")
         with self.assertRaises(frappe.ValidationError):
             self._como(REVISOR, "Pedir aclaración")          # sin nota
         self._escribir(REVISOR, nota_aclaracion="Falta el ticket de recepción")
         self._como(REVISOR, "Pedir aclaración")
         self.assertEqual(self.pi.estado_revision, "En aclaración")
         self._como(REVISOR, "Reanudar")
+        # 'Reanudar' devuelve a Recibida: 'En revisión' ya no es un estado al que se llegue
+        self.assertEqual(self.pi.estado_revision, "Recibida")
         self._como(TESORERIA, "Rechazar")
         self.assertEqual((self.pi.estado_revision, self.pi.docstatus), ("Rechazada", 0))
         # el UUID sigue bloqueando duplicados
         otra = procesar_xml(ejemplos.INGRESO_40, "SAT")
         self.assertTrue(otra.flags.duplicado)
 
-    def test_tesoreria_escribe_la_nota_en_revision_y_rechaza(self):
+    def test_tesoreria_escribe_la_nota_y_rechaza_lo_recibido(self):
         """Tesorería debe poder documentar el rechazo sin pasar por el revisor: escribe la nota
-        estando en 'En revisión' (estado cuyo allow_edit era sólo del revisor) y rechaza."""
-        self._como(REVISOR, "Enviar a revisión")
+        estando en 'Recibida' y rechaza."""
         self._escribir(TESORERIA, nota_aclaracion="El importe no coincide con la orden de compra")
         self._como(TESORERIA, "Rechazar")
         self.assertEqual((self.pi.estado_revision, self.pi.docstatus), ("Rechazada", 0))
         self.assertEqual(self.pi.nota_aclaracion, "El importe no coincide con la orden de compra")
 
-    def test_tesoreria_confirma_la_recepcion_en_revision(self):
-        """La transición 'Confirmar recepción' también es de Tesorería: tiene que poder marcar la
-        casilla en 'En revisión', no sólo aplicar la acción."""
-        self._como(REVISOR, "Enviar a revisión")
-        self._escribir(TESORERIA, recepcion_confirmada=1)
-        self.assertEqual(self.pi.recepcion_confirmada_por, TESORERIA)
+    def test_tesoreria_rechaza_lo_ya_revisado(self):
+        """Rechazar sigue disponible después de que alguien confirmó la recepción."""
+        self._como(REVISOR, "Confirmar recepción")
+        self._escribir(TESORERIA, nota_aclaracion="Factura duplicada")
+        self._como(TESORERIA, "Rechazar")
+        self.assertEqual(self.pi.estado_revision, "Rechazada")
+
+    def test_tesoreria_tambien_confirma_la_recepcion(self):
+        """'Confirmar recepción' es de los dos roles: Tesorería no depende del revisor."""
         self._como(TESORERIA, "Confirmar recepción")
-        self.assertEqual(self.pi.estado_revision, "Revisada")
+        self.assertEqual((self.pi.estado_revision, self.pi.recepcion_confirmada_por), ("Revisada", TESORERIA))
+
+    def test_acciones_en_bloque_desde_la_lista(self):
+        """Lo que de verdad ahorra clics con ~1000 facturas al mes: marcar varias en la lista y
+        aplicarles la acción de golpe. Lo mueve la función nativa de Frappe, así que el flujo nuevo
+        tiene que funcionar tal cual por ahí."""
+        otra = self._otra_factura("11111111-2222-3333-4444-555555555555", "77")
+        nombres = json.dumps([self.pi.name, otra])
+        frappe.set_user(REVISOR)
+        try:
+            bulk_workflow_approval(nombres, "Purchase Invoice", "Confirmar recepción")
+        finally:
+            frappe.set_user("Administrator")
+        for name in (self.pi.name, otra):
+            self.assertEqual(frappe.db.get_value("Purchase Invoice", name,
+                                                 ["estado_revision", "recepcion_confirmada"]),
+                             ("Revisada", 1), name)
+        frappe.set_user(TESORERIA)
+        try:
+            bulk_workflow_approval(nombres, "Purchase Invoice", "Aprobar")
+        finally:
+            frappe.set_user("Administrator")
+        for name in (self.pi.name, otra):
+            self.assertEqual(frappe.db.get_value("Purchase Invoice", name, ["estado_revision", "docstatus"]),
+                             ("Aprobada", 1), name)
+
+    def test_al_cambiar_el_flujo_se_cierran_las_acciones_pendientes(self):
+        """Frappe crea un 'Workflow Action' abierto por factura con los roles que en ese momento
+        podían moverla (create_workflow_actions_for_roles); el registro guarda el ESTADO, no la
+        acción. Al retirar una transición, los que quedan abiertos prometen un permiso que ya no
+        existe: asegurar_flujo los cierra y el siguiente guardado crea el que toque."""
+        self.addCleanup(flujo.asegurar_flujo)
+        if not frappe.db.exists("Workflow Action Master", "Enviar a revisión"):
+            frappe.get_doc({"doctype": "Workflow Action Master",
+                            "workflow_action_name": "Enviar a revisión"}).insert(ignore_permissions=True)
+        wf = frappe.get_doc("Workflow", flujo.NOMBRE)
+        wf.append("transitions", {"state": "Recibida", "action": "Enviar a revisión",
+                                  "next_state": "En revisión", "allowed": roles.REV,
+                                  "allow_self_approval": 1, "condition": ""})
+        wf.flags.ignore_permissions = True
+        wf.save()
+        vieja = self._accion_pendiente()
+        flujo.asegurar_flujo()
+        self.assertEqual(frappe.db.get_value("Workflow Action", vieja, "status"), "Completed")
+        self.assertNotIn("Enviar a revisión",
+                         {t.action for t in frappe.get_doc("Workflow", flujo.NOMBRE).transitions})
+        # y es idempotente: con el flujo ya en su sitio, lo que esté abierto se queda abierto
+        nueva = self._accion_pendiente()
+        flujo.asegurar_flujo()
+        self.assertEqual(frappe.db.get_value("Workflow Action", nueva, "status"), "Open")
 
     def test_error_de_lectura_no_se_aprueba(self):
         frappe.db.set_value("Purchase Invoice", self.pi.name, "estado_revision", "Error de lectura")

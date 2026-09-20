@@ -111,6 +111,17 @@ class TestCuentaBancaria(FrappeTestCase):
         self.assertEqual(c.nombre_tef, "AVICOLA,DEL CARMEN SA DE CV/")
         self.assertEqual(c.verificada, 0)
 
+    def test_la_cuenta_de_proveedor_no_lleva_compania(self):
+        """La Compañía de una Bank Account es la de la empresa dueña de la cuenta, no la del
+        proveedor: ERPNext sólo la exige cuando `is_company_account` (mandatory_depends_on), y en la
+        lista de cuentas de proveedor esa columna no dice nada. Se deja vacía aunque venga llena."""
+        c = self._cuenta(clabe=CLABE_OTRO, company=pruebas_comun.EMPRESA)
+        self.assertFalse(c.company)
+        self.assertFalse(frappe.db.get_value("Bank Account", c.name, "company"))
+        c.company = pruebas_comun.EMPRESA
+        c.save(ignore_permissions=True)
+        self.assertFalse(frappe.db.get_value("Bank Account", c.name, "company"))
+
     def test_clabe_banamex_exige_sucursal_y_cuenta(self):
         with self.assertRaises(frappe.ValidationError):
             self._cuenta(bank="Banamex", clabe=CLABE_BANAMEX)

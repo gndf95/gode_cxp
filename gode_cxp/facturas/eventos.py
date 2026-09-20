@@ -9,6 +9,11 @@ def validar_factura(doc, method=None):
         _reiniciar_revision_de_la_enmienda(doc)
     if doc.cfdi_recibido and not doc.estado_revision:
         doc.estado_revision = "Recibida"
+    if doc.estado_revision == "Revisada" and not doc.recepcion_confirmada:
+        # La acción "Confirmar recepción" ES la confirmación: ya no hay que marcar la casilla y
+        # guardar aparte. `apply_workflow` pone el estado nuevo en memoria y luego guarda
+        # (frappe/model/workflow.py), así que aquí ya se ve "Revisada" y el sello se pone solo.
+        doc.recepcion_confirmada = 1
     if doc.recepcion_confirmada and not doc.recepcion_confirmada_por:
         doc.recepcion_confirmada_por = frappe.session.user
         doc.recepcion_confirmada_el = now_datetime()

@@ -16,20 +16,54 @@ ESTADOS = [
     ("Recibida", "0"), ("En revisión", "0"), ("En aclaración", "0"), ("Revisada", "0"),
     ("Aprobada", "1"), ("Rechazada", "0"), ("Error de lectura", "0"),
 ]
+# El camino normal son DOS clics: "Confirmar recepción" (Revisor o Tesorería) y "Aprobar"
+# (Tesorería). El paso "Enviar a revisión" se retiró —era un trámite de por medio y con ~1000
+# facturas al mes costaba caro— y la casilla `recepcion_confirmada` ya no es condición de nada: la
+# propia acción la marca (facturas/eventos.validar_factura). Lo que NO se junta es confirmar y
+# aprobar: siguen siendo dos transiciones para que queden dos registros, quién recibió y quién pagó.
+#
+# El estado "En revisión" se conserva (puede haber facturas ahí cuando migre producción) y desde él
+# se puede confirmar la recepción, pedir aclaración o rechazar; simplemente ya no se llega a él.
 TRANSICIONES = [  # (estado, acción, siguiente, rol, condición)
-    ("Recibida", "Enviar a revisión", "En revisión", REV, ""),
-    ("Recibida", "Enviar a revisión", "En revisión", TES, ""),
-    ("En revisión", "Confirmar recepción", "Revisada", REV, "doc.recepcion_confirmada == 1"),
-    ("En revisión", "Confirmar recepción", "Revisada", TES, "doc.recepcion_confirmada == 1"),
+    ("Recibida", "Confirmar recepción", "Revisada", REV, ""),
+    ("Recibida", "Confirmar recepción", "Revisada", TES, ""),
+    ("En revisión", "Confirmar recepción", "Revisada", REV, ""),
+    ("En revisión", "Confirmar recepción", "Revisada", TES, ""),
+    ("Recibida", "Pedir aclaración", "En aclaración", REV, "doc.nota_aclaracion"),
+    ("Recibida", "Pedir aclaración", "En aclaración", TES, "doc.nota_aclaracion"),
     ("En revisión", "Pedir aclaración", "En aclaración", REV, "doc.nota_aclaracion"),
     ("En revisión", "Pedir aclaración", "En aclaración", TES, "doc.nota_aclaracion"),
-    ("En aclaración", "Reanudar", "En revisión", REV, ""),
-    ("En aclaración", "Reanudar", "En revisión", TES, ""),
+    ("En aclaración", "Reanudar", "Recibida", REV, ""),
+    ("En aclaración", "Reanudar", "Recibida", TES, ""),
     ("Revisada", "Aprobar", "Aprobada", TES, ""),
-    ("Revisada", "Rechazar", "Rechazada", TES, "doc.nota_aclaracion"),
+    ("Recibida", "Rechazar", "Rechazada", TES, "doc.nota_aclaracion"),
     ("En revisión", "Rechazar", "Rechazada", TES, "doc.nota_aclaracion"),
+    ("Revisada", "Rechazar", "Rechazada", TES, "doc.nota_aclaracion"),
     ("Error de lectura", "Corregida", "Recibida", TES, "doc.grand_total"),
 ]
+
+
+def _como_estan(wf):
+    """Las transiciones guardadas, en la misma forma que TRANSICIONES, para poder compararlas."""
+    return {(t.state, t.action, t.next_state, t.allowed, t.condition or "") for t in wf.transitions}
+
+
+def cerrar_acciones_pendientes():
+    """Cierra los `Workflow Action` abiertos de las facturas de compra.
+
+    Frappe crea uno por documento con los roles que en ese momento podían moverlo
+    (frappe/workflow/doctype/workflow_action/workflow_action.py::create_workflow_actions_for_roles,
+    que corre SIEMPRE, aunque el flujo no mande correos). El registro guarda el ESTADO del documento,
+    no la acción, así que al retirar una transición los que quedan abiertos prometen un permiso que
+    ya no existe. Se cierran en vez de borrarse —no dejan hijos huérfanos y queda el rastro— y el
+    siguiente guardado de la factura crea el que corresponda al flujo nuevo
+    (`is_workflow_action_already_created` sólo mira los que están en 'Open')."""
+    abiertas = frappe.get_all("Workflow Action",
+                              filters={"reference_doctype": "Purchase Invoice", "status": "Open"},
+                              pluck="name")
+    for name in abiertas:
+        frappe.db.set_value("Workflow Action", name, "status", "Completed", update_modified=False)
+    return abiertas
 
 
 def asegurar_flujo():
@@ -44,6 +78,7 @@ def asegurar_flujo():
     else:
         wf = frappe.new_doc("Workflow")
         wf.workflow_name = NOMBRE
+    cambiaron = _como_estan(wf) != {tuple(t) for t in TRANSICIONES}
     wf.document_type = "Purchase Invoice"
     wf.workflow_state_field = "estado_revision"
     wf.is_active = 1
@@ -58,3 +93,5 @@ def asegurar_flujo():
                                    "allow_self_approval": 1, "condition": condicion})
     wf.flags.ignore_permissions = True
     wf.save()
+    if cambiaron:
+        cerrar_acciones_pendientes()

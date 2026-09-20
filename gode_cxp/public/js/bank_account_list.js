@@ -8,8 +8,26 @@
 frappe.listview_settings["Bank Account"] = frappe.listview_settings["Bank Account"] || {};
 const cxp_ajustes_ba = frappe.listview_settings["Bank Account"];
 const cxp_onload_previo_ba = cxp_ajustes_ba.onload;
-// El estado del alta se pinta en la lista y se filtra desde las acciones: tiene que venir en las filas.
-cxp_ajustes_ba.add_fields = (cxp_ajustes_ba.add_fields || []).concat(["party_type", "estado_preregistro"]);
+const cxp_indicador_previo_ba = cxp_ajustes_ba.get_indicator;
+// El estado del alta se pinta en la lista y se filtra desde las acciones: tiene que venir en las
+// filas. `verificada` y `disabled` los necesita el indicador (no son columnas de la lista).
+cxp_ajustes_ba.add_fields = (cxp_ajustes_ba.add_fields || []).concat(
+	["party_type", "estado_preregistro", "verificada", "disabled"]);
+
+// De un vistazo: si a esta cuenta ya se le puede pagar. Sólo se pronuncia sobre cuentas de proveedor
+// activas; para todo lo demás (cuentas de la empresa, cuentas deshabilitadas) devuelve undefined y
+// Frappe sigue con su lógica de siempre —Habilitada / Deshabilitada—, que es lo que hacía hasta hoy
+// (frappe/public/js/frappe/model/indicator.js: settings.get_indicator sólo manda si devuelve algo).
+cxp_ajustes_ba.get_indicator = function (doc) {
+	const previo = cxp_indicador_previo_ba && cxp_indicador_previo_ba.call(cxp_ajustes_ba, doc);
+	if (previo) return previo;
+	if (doc.party_type !== "Supplier" || doc.disabled) return;
+	if (!doc.verificada) return [__("Sin verificar"), "gray", "verificada,=,0"];
+	if (doc.estado_preregistro === "Registrada") {
+		return [__("Lista para pagar"), "green", "estado_preregistro,=,Registrada"];
+	}
+	return [__("Falta el alta en el banco"), "orange", "estado_preregistro,!=,Registrada"];
+};
 
 cxp_ajustes_ba.onload = function (listview) {
 	if (cxp_onload_previo_ba) cxp_onload_previo_ba.call(cxp_ajustes_ba, listview);

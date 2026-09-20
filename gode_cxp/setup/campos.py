@@ -58,8 +58,12 @@ CAMPOS = {
     "Bank Account": [
         {"fieldname": "sec_tef", "label": "Datos para TEF Banamex", "fieldtype": "Section Break", "insert_after": "bank_account_no",
          "depends_on": "eval:doc.party_type=='Supplier'"},
-        {"fieldname": "clabe", "label": "CLABE (18 dígitos)", "fieldtype": "Data", "length": 18, "insert_after": "sec_tef", "in_list_view": 1},
+        # La CLABE sale de la lista (in_list_view 0): es el número de cuenta del proveedor, se ve en
+        # la ficha, y la columna que de verdad hace falta de un vistazo es la naturaleza del pago.
+        # Las columnas de la lista las fija setup/instalar.asegurar_lista_cuentas_bancarias.
+        {"fieldname": "clabe", "label": "CLABE (18 dígitos)", "fieldtype": "Data", "length": 18, "insert_after": "sec_tef", "in_list_view": 0},
         {"fieldname": "tipo_pago_tef", "label": "Naturaleza TEF", "fieldtype": "Select", "options": "\n06\n12", "read_only": 1, "insert_after": "clabe",
+         "in_list_view": 1,
          "description": "06 = cuenta Banamex (sucursal + cuenta); 12 = interbancario por CLABE"},
         {"fieldname": "sucursal_banamex", "label": "Sucursal Banamex (4)", "fieldtype": "Data", "length": 4, "insert_after": "tipo_pago_tef", "depends_on": "eval:doc.tipo_pago_tef=='06'"},
         {"fieldname": "cuenta_banamex", "label": "Cuenta Banamex (7)", "fieldtype": "Data", "length": 7, "insert_after": "sucursal_banamex", "depends_on": "eval:doc.tipo_pago_tef=='06'"},

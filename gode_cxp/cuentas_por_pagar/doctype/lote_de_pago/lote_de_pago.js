@@ -1,6 +1,13 @@
 // Botones del lote de pago: lo que Tesorería puede hacer en cada estado.
 // El estado manda, no el docstatus: un lote enviado recorre Autorizado → Exportado → Transmitido →
 // (Aplicado | Parcial | Rechazado) y en cada paso hay un botón distinto.
+
+// El archivo NO se abre por su file_url: Frappe se lo sirve al navegador y acaba abierto como texto
+// en otra pestaña, y lo que hace falta es el .txt en disco para subirlo a BancaNet. Este punto de
+// entrada responde con Content-Disposition: attachment (ver gode_cxp.pagos.api.descargar_archivo).
+const cxp_url_archivo_tef = (lote) =>
+	`/api/method/gode_cxp.pagos.api.descargar_archivo?lote=${encodeURIComponent(lote)}`;
+
 frappe.ui.form.on("Lote de Pago", {
 	refresh(frm) {
 		const tesoreria = frappe.user_roles.includes("CxP Tesoreria") || frappe.user_roles.includes("System Manager");
@@ -10,7 +17,7 @@ frappe.ui.form.on("Lote de Pago", {
 			frm.page.set_primary_action(__("Autorizar lote"), () => frm.savesubmit());
 		}
 		if (frm.doc.archivo_tef) {
-			frm.add_custom_button(__("Descargar archivo"), () => window.open(frm.doc.archivo_tef));
+			frm.add_custom_button(__("Descargar archivo"), () => window.open(cxp_url_archivo_tef(frm.doc.name)));
 		}
 		if (!tesoreria || frm.doc.docstatus !== 1) return;
 
@@ -30,7 +37,7 @@ frappe.ui.form.on("Lote de Pago", {
 					frappe.msgprint({
 						title: __("Archivo del banco listo"),
 						indicator: "green",
-						message: `<a href="${encodeURI(r.message.file_url)}" download>${nombre}</a>`,
+						message: `<a href="${cxp_url_archivo_tef(frm.doc.name)}">${nombre}</a>`,
 					});
 				});
 			}, __("Banco"));

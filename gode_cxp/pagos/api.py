@@ -17,6 +17,13 @@ def _exigir(*roles):
                      frappe.PermissionError)
 
 
+def _leer_el_lote(lote):
+    """El lote, comprobando el permiso de LECTURA sobre el documento (no el de escritura)."""
+    doc = frappe.get_doc("Lote de Pago", lote)
+    doc.check_permission("read")
+    return doc
+
+
 def _exigir_el_lote(lote):
     """Además del rol, el permiso de escritura SOBRE EL DOCUMENTO.
 
@@ -68,6 +75,33 @@ def marcar_transmitido(lote, autorizacion):
     _exigir_el_lote(lote)
     lotes.marcar_transmitido(lote, autorizacion)
     return lote
+
+
+@frappe.whitelist()
+def descargar_archivo(lote):
+    """Baja el archivo TEF del lote, forzando la descarga.
+
+    El `file_url` del adjunto privado se lo sirve Frappe al navegador y el .txt acaba abierto como
+    texto en otra pestaña; BancaNet necesita el archivo en disco. `frappe.response.type = "download"`
+    es lo que hace que la respuesta salga con `Content-Disposition: attachment`
+    (frappe/utils/response.py::as_raw), con el nombre que espera el banco.
+
+    Leer el archivo no mueve dinero, así que basta con poder LEER el lote: lo piden los mismos roles
+    que pueden abrirlo (Tesorería, Revisor y Contabilidad), más el permiso por documento, porque el
+    archivo lleva las cuentas bancarias de los proveedores."""
+    _exigir("CxP Tesoreria", "CxP Revisor", "CxP Contabilidad", "System Manager")
+    doc = _leer_el_lote(lote)
+    if not doc.archivo_tef:
+        frappe.throw(_("El lote {0} todavía no tiene archivo del banco: genéralo primero.").format(doc.name))
+    adjunto = frappe.db.get_value("File", {"file_url": doc.archivo_tef, "attached_to_doctype": "Lote de Pago",
+                                           "attached_to_name": doc.name}, "name")
+    if not adjunto:
+        frappe.throw(_("El archivo {0} del lote {1} ya no está adjunto: vuelve a generarlo.")
+                     .format(doc.archivo_tef, doc.name))
+    frappe.response["filename"] = doc.nombre_archivo or frappe.db.get_value("File", adjunto, "file_name")
+    # En bytes, tal cual se escribió: el archivo va en ancho fijo y con CRLF.
+    frappe.response["filecontent"] = frappe.get_doc("File", adjunto).get_content()
+    frappe.response["type"] = "download"
 
 
 @frappe.whitelist()

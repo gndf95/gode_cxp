@@ -112,6 +112,10 @@ def validar_cuenta_bancaria(doc, method=None):
     """Hook Bank Account.validate: solo actúa en cuentas de proveedor."""
     if doc.party_type != "Supplier" or not doc.party:
         return
+    # La Compañía de una Bank Account es la de la empresa dueña de la cuenta, no la del proveedor:
+    # ERPNext sólo la exige cuando `is_company_account` (mandatory_depends_on en bank_account.json) y
+    # en una cuenta de tercero no significa nada —sólo ocupaba una columna vacía en la lista.
+    doc.company = None
     doc.clabe = (doc.clabe or "").strip()
     if doc.clabe:
         if not validar_clabe(doc.clabe):

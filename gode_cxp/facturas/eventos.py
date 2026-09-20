@@ -9,6 +9,10 @@ def validar_factura(doc, method=None):
         _reiniciar_revision_de_la_enmienda(doc)
     if doc.cfdi_recibido and not doc.estado_revision:
         doc.estado_revision = "Recibida"
+    antes = doc.get_doc_before_save() if not doc.is_new() else None
+    if antes and antes.estado_revision == "Revisada" and doc.estado_revision == "Recibida":
+        # "Regresar a recibida" deshace la confirmación: quien la vuelva a confirmar deja su propio sello.
+        doc.recepcion_confirmada = 0
     if doc.estado_revision == "Revisada" and not doc.recepcion_confirmada:
         # La acción "Confirmar recepción" ES la confirmación: ya no hay que marcar la casilla y
         # guardar aparte. `apply_workflow` pone el estado nuevo en memoria y luego guarda

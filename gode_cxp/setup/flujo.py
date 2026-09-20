@@ -36,6 +36,10 @@ TRANSICIONES = [  # (estado, acción, siguiente, rol, condición)
     ("En aclaración", "Reanudar", "Recibida", REV, ""),
     ("En aclaración", "Reanudar", "Recibida", TES, ""),
     ("Revisada", "Aprobar", "Aprobada", TES, ""),
+    # Deshacer: con "Confirmar recepción" de un clic y aplicable en bloque, un bloque mal seleccionado
+    # necesita marcha atrás. Al volver a Recibida se borra el sello de recepción (facturas/eventos).
+    ("Revisada", "Regresar a recibida", "Recibida", REV, ""),
+    ("Revisada", "Regresar a recibida", "Recibida", TES, ""),
     ("Recibida", "Rechazar", "Rechazada", TES, "doc.nota_aclaracion"),
     ("En revisión", "Rechazar", "Rechazada", TES, "doc.nota_aclaracion"),
     ("Revisada", "Rechazar", "Rechazada", TES, "doc.nota_aclaracion"),

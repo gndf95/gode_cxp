@@ -98,6 +98,15 @@ class TestFlujo(FrappeTestCase):
 
     # ------------------------------------------------------------------ flujo
 
+    def test_regresar_a_recibida_deshace_la_confirmacion(self):
+        """Un bloque mal seleccionado tiene marcha atrás, y quien vuelve a confirmar deja su propio sello."""
+        self._como(REVISOR, "Confirmar recepción")
+        self._como(REVISOR, "Regresar a recibida")
+        self.assertEqual((self.pi.estado_revision, self.pi.recepcion_confirmada, self.pi.recepcion_confirmada_por),
+                         ("Recibida", 0, None))
+        self._como(TESORERIA, "Confirmar recepción")
+        self.assertEqual((self.pi.estado_revision, self.pi.recepcion_confirmada_por), ("Revisada", TESORERIA))
+
     def test_flujo_completo(self):
         """Dos clics, no cinco: Recibida → 'Confirmar recepción' → Revisada → 'Aprobar'."""
         self.assertEqual(self.pi.estado_revision, "Recibida")

@@ -98,9 +98,12 @@ def descargar_archivo(lote):
     if not adjunto:
         frappe.throw(_("El archivo {0} del lote {1} ya no está adjunto: vuelve a generarlo.")
                      .format(doc.archivo_tef, doc.name))
-    frappe.response["filename"] = doc.nombre_archivo or frappe.db.get_value("File", adjunto, "file_name")
-    # En bytes, tal cual se escribió: el archivo va en ancho fijo y con CRLF.
-    frappe.response["filecontent"] = frappe.get_doc("File", adjunto).get_content()
+    archivo = frappe.get_doc("File", adjunto)
+    frappe.response["filename"] = doc.nombre_archivo or archivo.file_name
+    # En BYTES, tal cual se escribió: el archivo va en ancho fijo y con CRLF, y `File.get_content()`
+    # devolvería `str` (intenta `.decode()` con todo lo que no reviente, como este .txt).
+    with open(archivo.get_full_path(), "rb") as f:
+        frappe.response["filecontent"] = f.read()
     frappe.response["type"] = "download"
 
 

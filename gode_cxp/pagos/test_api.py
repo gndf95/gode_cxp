@@ -172,10 +172,13 @@ class TestApiPagos(FrappeTestCase):
         self.assertEqual(frappe.local.response["type"], "download")
         self.assertEqual(frappe.local.response["filename"], generado["nombre_archivo"])
         # los mismos bytes del File adjunto, sin recodificar: el archivo va en ancho fijo con CRLF
+        # (se leen del disco y no con File.get_content(), que devuelve `str` para un .txt)
         adjunto = frappe.get_doc("File", frappe.db.get_value("File", {"file_url": generado["file_url"]}, "name"))
+        with open(adjunto.get_full_path(), "rb") as f:
+            esperado = f.read()
         contenido = frappe.local.response["filecontent"]
         self.assertIsInstance(contenido, bytes)
-        self.assertEqual(contenido, adjunto.get_content())
+        self.assertEqual(contenido, esperado)
         self.assertTrue(contenido.endswith(b"\r\n"), contenido[-4:])
 
     def test_descargar_el_archivo_respeta_el_permiso_sobre_el_lote(self):
